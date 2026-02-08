@@ -1,0 +1,108 @@
+[project]
+name = "abovedata-backtesting"
+version = "0.1.0"
+description = "Demo library for analyzing ucc financing trends, as related to quarterly sales."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [
+  { name = "Ed Powers", email = "ed@abovedata.io" }
+]
+dependencies = [
+    "altair>=6.0.0",
+    "polars>=1.37.1",
+    "pyarrow>=22.0.0",
+    "pydantic>=2.12.5",
+    "yfinance>=1.0",
+    "numpy>=2.4.1",
+    "rich>=14.3.2",
+    "statsmodels>=0.14.6",
+]
+
+[dependency-groups]
+dev = [
+    "ipython>=9.10.0",
+    "pyright>=1.1.408",
+    "ruff>=0.14.11",
+    "ty>=0.0.11",
+]
+
+
+[build-system]
+requires = ["uv_build>=0.9.25,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["abovedata_backtesting"]
+
+
+[tool.ruff]
+# Same as Black.
+line-length = 88
+# Assume Python 3.12
+target-version = "py312"
+
+# Allow autofix behavior for specific rules
+lint.fixable = ["ALL"]
+lint.unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 18
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**/*" = ["S101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pylint]
+max-args = 8
+
+[tool.ruff.format]
+# Let Ruff detect quote style from the file
+quote-style = "preserve"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+
+
+[tool.basedpyright]
+extraPaths = ["abovedata_backtesting"]
+include = ["abovedata_backtesting"]
+ignore = [".venv"]
+venvPath = "."
+venv = ".venv"
+exclude = [
+    ".venv/**",
+    "**/.venv/**",
+    "**/site-packages/**",
+]
+stubPath = ""
+verboseOutput = false
+typeCheckingMode = "strict"
+strictListInference = true
+strictDictionaryInference = true
+reportGeneralTypeIssues = "error"
+reportPropertyTypeMismatch = "error"
+reportUndefinedVariable = "error"
+reportUnknownMemberType = false
+reportUnknownVariableType = "hint"
+reportMissingModuleSource = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownParameterType = "hint"
+reportUnnecessaryComparison = "hint"
+reportCallIssue = "warning"              # Will catch incorrect function calls
+reportArgumentType = "error"           # Will catch argument type mismatches
+strictParameterNoneValue = true        # More strict parameter checking
+reportMissingParameterType = "error"   # Ensures all parameters have type hints
+reportFunctionMemberAccess = "error"   # Catches incorrect function member access
+reportMissingTypeStubs = false         # BasedPyright config
+reportAny = false
+reportImplicitOverride = false
+reportUnannotatedClassAttribute = false
+reportUnusedCallResult = false # only used in basedpyright in my local
+useLibraryCodeForTypes = false  # will force basedpyright to parse site-packages.
+analyzeUnannotatedFunctions = false  # Skip analyzing library internals

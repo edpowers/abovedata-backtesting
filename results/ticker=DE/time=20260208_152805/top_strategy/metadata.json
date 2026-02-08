@@ -1,0 +1,37 @@
+{
+  "name": "corr_aware_leading_ma_noshift_e30d \u00d7 signal_change",
+  "entry": "corr_aware_leading_ma_noshift_e30d",
+  "exit": "signal_change",
+  "entry_params": {
+    "entry_type": "correlation_aware",
+    "signal_col": "visible_revenue_resid",
+    "corr_col": "leading_ma",
+    "min_signal_abs": 0.0,
+    "skip_regime_shifts": true,
+    "scale_by_confidence": false,
+    "confidence_col": "contemp",
+    "entry_days_before": 30,
+    "use_prior_quarter_corr": true
+  },
+  "exit_params": {
+    "exit_type": "signal_change"
+  },
+  "sharpe": 0.5692927555999661,
+  "total_return": 5.092088424186311,
+  "annualized_return": 0.13684066447067322,
+  "max_drawdown": -0.4605804176114911,
+  "n_trades": 17,
+  "win_rate": 0.7647058823529411,
+  "signal_accuracy": 0.6666666666666666,
+  "direction_accuracy": 0.7333333333333333,
+  "skill_ratio": 0.7333333333333333,
+  "hhi": 0.19277365691855503,
+  "top1_pct": 0.468275065627953,
+  "top3_pct": 0.6511134807769406,
+  "return_ex_top1": 1.5484051014343772,
+  "return_ex_top3": 0.5774419240914288,
+  "profit_factor": 6.22468886111401,
+  "expectancy": 0.14661529160709663,
+  "tail_ratio": 7.334872558980287,
+  "max_single_contribution": 1.39054945414972
+}

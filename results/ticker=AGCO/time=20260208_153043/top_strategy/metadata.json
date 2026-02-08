@@ -1,0 +1,37 @@
+{
+  "name": "corr_aware_contemp_sameq_e10d \u00d7 sl-5%_tp10%",
+  "entry": "corr_aware_contemp_sameq_e10d",
+  "exit": "sl-5%_tp10%",
+  "entry_params": {
+    "entry_type": "correlation_aware",
+    "signal_col": "visible_revenue_resid",
+    "corr_col": "contemp",
+    "min_signal_abs": 0.0,
+    "skip_regime_shifts": false,
+    "scale_by_confidence": false,
+    "confidence_col": "contemp",
+    "entry_days_before": 10,
+    "use_prior_quarter_corr": false
+  },
+  "exit_params": {
+    "exit_type": "sl-5%_tp10%"
+  },
+  "sharpe": 0.3600149805097533,
+  "total_return": 12.529186321609766,
+  "annualized_return": 0.09688855435231503,
+  "max_drawdown": -0.3795316329291261,
+  "n_trades": 120,
+  "win_rate": 0.5166666666666667,
+  "signal_accuracy": 0.5981308411214953,
+  "direction_accuracy": 0.5327102803738317,
+  "skill_ratio": 0.5327102803738317,
+  "hhi": 0.009685512987881402,
+  "top1_pct": 0.028356209858435455,
+  "top3_pct": 0.08236148476779954,
+  "return_ex_top1": 10.38983837543516,
+  "return_ex_top3": 7.195799547476627,
+  "profit_factor": 1.8702539050196043,
+  "expectancy": 0.025685016307164077,
+  "tail_ratio": 1.76162366786508,
+  "max_single_contribution": 0.18782952625461358
+}

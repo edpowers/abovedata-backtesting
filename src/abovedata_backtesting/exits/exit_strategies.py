@@ -1,0 +1,273 @@
+"""Exit strategy implementations.
+
+Each exit strategy modifies positions computed by a trading strategy,
+applying exit logic (holding periods, stop losses, etc.) to determine
+when to close positions.
+"""
+
+from __future__ import annotations
+
+import bisect
+import datetime as dt
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+import polars as pl
+
+
+class ExitRule(ABC):
+    """
+    Abstract base class for exit strategies.
+
+    An ExitRule takes a DataFrame that already has positions from a
+    trading strategy and modifies them based on exit logic.
+
+    Required input columns: date, position, close.
+    Some subclasses require additional columns (e.g., signal dates).
+    """
+
+    @abstractmethod
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        """
+        Apply exit logic to modify positions.
+
+        Parameters
+        ----------
+        daily : pl.DataFrame
+            Must contain: date, position, close.
+            May require additional columns per subclass.
+
+        Returns
+        -------
+        pl.DataFrame
+            Same DataFrame with position column modified by exit logic.
+        """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Human-readable identifier for this exit rule."""
+
+
+@dataclass(frozen=True, slots=True)
+class SignalChangeExit(ExitRule):
+    """
+    No-op exit: positions change only when the underlying signal changes.
+    This is the default — the trading strategy's positions are used as-is.
+    """
+
+    @property
+    def name(self) -> str:
+        return "signal_change"
+
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        return daily
+
+
+@dataclass(frozen=True, slots=True)
+class FixedHoldingExit(ExitRule):
+    """
+    Exit after a fixed number of days, resetting if a new signal fires.
+
+    Parameters
+    ----------
+    holding_days : int
+        Maximum days to hold a position before exiting.
+    signal_dates : list[dt.date]
+        Dates on which new signals were generated (e.g., earnings dates).
+        Position timer resets on these dates.
+    """
+
+    holding_days: int = 60
+    signal_dates: frozenset[dt.date] = frozenset()
+
+    @property
+    def name(self) -> str:
+        return f"fixed_holding_{self.holding_days}d"
+
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        dates = daily["date"].to_list()
+        positions = daily["position"].to_list()
+
+        new_positions: list[float] = []
+        days_held = 0
+        in_position = False
+
+        for d, pos in zip(dates, positions, strict=True):
+            if abs(pos) > 0.01:
+                if not in_position:
+                    # New entry
+                    in_position, days_held = True, 1
+                    new_positions.append(pos)
+                elif d in self.signal_dates:
+                    # New signal resets the clock
+                    days_held = 1
+                    new_positions.append(pos)
+                elif days_held >= self.holding_days:
+                    # Time's up
+                    new_positions.append(0.0)
+                    in_position, days_held = False, 0
+                else:
+                    days_held += 1
+                    new_positions.append(pos)
+            else:
+                new_positions.append(0.0)
+                in_position, days_held = False, 0
+
+        return daily.with_columns(pl.Series("position", new_positions))
+
+
+@dataclass(frozen=True, slots=True)
+class NextEarningsExit(ExitRule):
+    """
+    Exit N days before the next earnings date.
+
+    Parameters
+    ----------
+    days_before : int
+        Number of calendar days before next earnings to exit.
+    earnings_dates : list[dt.date]
+        Sorted list of known earnings dates.
+    """
+
+    days_before: int = 1
+    earnings_dates: tuple[dt.date, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return f"next_earnings_{self.days_before}d_before"
+
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        dates = daily["date"].to_list()
+        positions = daily["position"].to_list()
+        sorted_earnings = sorted(self.earnings_dates)
+
+        new_positions: list[float] = []
+        for d, pos in zip(dates, positions, strict=True):
+            if abs(pos) < 0.01:
+                new_positions.append(0.0)
+                continue
+
+            # Binary search for next earnings after current date
+            idx = bisect.bisect_right(sorted_earnings, d)
+            next_earnings = sorted_earnings[idx] if idx < len(sorted_earnings) else None
+
+            if (
+                next_earnings is not None
+                and (next_earnings - d).days <= self.days_before
+            ):
+                new_positions.append(0.0)
+            else:
+                new_positions.append(pos)
+
+        return daily.with_columns(pl.Series("position", new_positions))
+
+
+@dataclass(frozen=True, slots=True)
+class StopLossTakeProfitExit(ExitRule):
+    """
+    Exit when cumulative return from entry hits stop-loss or take-profit.
+
+    Parameters
+    ----------
+    stop_loss_pct : float
+        Maximum loss before exit (negative, e.g., -0.10 for 10% loss).
+    take_profit_pct : float
+        Target profit for exit (positive, e.g., 0.20 for 20% gain).
+    """
+
+    stop_loss_pct: float = -0.10
+    take_profit_pct: float = 0.20
+
+    @property
+    def name(self) -> str:
+        return f"sl{self.stop_loss_pct:.0%}_tp{self.take_profit_pct:.0%}"
+
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        positions = daily["position"].to_list()
+        prices = daily["close"].to_list()
+
+        new_positions: list[float] = []
+        entry_price: float | None = None
+        in_position = False
+        direction = 0.0
+
+        for pos, price in zip(positions, prices, strict=True):
+            if abs(pos) > 0.01 and not in_position:
+                # New entry
+                in_position = True
+                entry_price = price
+                direction = 1.0 if pos > 0 else -1.0
+                new_positions.append(pos)
+            elif in_position and entry_price is not None:
+                ret = (price / entry_price - 1) * direction
+                if (
+                    ret <= self.stop_loss_pct
+                    or ret >= self.take_profit_pct
+                    or abs(pos) < 0.01
+                ):
+                    new_positions.append(0.0)
+                    in_position, entry_price = False, None
+                else:
+                    new_positions.append(pos)
+            else:
+                new_positions.append(pos)
+                if abs(pos) < 0.01:
+                    in_position, entry_price = False, None
+
+        return daily.with_columns(pl.Series("position", new_positions))
+
+
+@dataclass(frozen=True, slots=True)
+class TrailingStopExit(ExitRule):
+    """
+    Exit when price retraces by a percentage from peak (long) or trough (short).
+
+    Parameters
+    ----------
+    trailing_stop_pct : float
+        Percentage retracement that triggers exit (e.g., 0.05 for 5%).
+    """
+
+    trailing_stop_pct: float = 0.05
+
+    @property
+    def name(self) -> str:
+        return f"trailing_stop_{self.trailing_stop_pct:.0%}"
+
+    def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
+        positions = daily["position"].to_list()
+        prices = daily["close"].to_list()
+
+        new_positions: list[float] = []
+        peak: float | None = None
+        trough: float | None = None
+        in_position = False
+        direction = 0.0
+
+        for pos, price in zip(positions, prices, strict=True):
+            if abs(pos) > 0.01 and not in_position:
+                # New entry
+                in_position = True
+                direction = 1.0 if pos > 0 else -1.0
+                peak = price if direction > 0 else None
+                trough = price if direction < 0 else None
+                new_positions.append(pos)
+            elif in_position:
+                should_exit = False
+                if direction > 0 and peak is not None:
+                    peak = max(peak, price)
+                    should_exit = (price / peak - 1) <= -self.trailing_stop_pct
+                elif direction < 0 and trough is not None:
+                    trough = min(trough, price)
+                    should_exit = (price / trough - 1) >= self.trailing_stop_pct
+
+                if should_exit or abs(pos) < 0.01:
+                    new_positions.append(0.0)
+                    in_position, peak, trough = False, None, None
+                else:
+                    new_positions.append(pos)
+            else:
+                new_positions.append(pos)
+
+        return daily.with_columns(pl.Series("position", new_positions))
