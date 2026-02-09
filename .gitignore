@@ -16,8 +16,10 @@ CONTEXT.md
 
 .DS_Store
 
-*.parquet
+
+data/market-data
 
 # Exclude all results except the latest runs (ignore any time= folder that isn't "latest")
 results/ticker=*/time=*
 !results/ticker=*/time=latest
+results/ticker=*/time=*/**/*.parquet
