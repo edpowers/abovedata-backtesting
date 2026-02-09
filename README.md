@@ -66,52 +66,6 @@ src/
     ├── correlation_aware_strategy_main.py  # Main strategy grid search
 ```
 
-## The Iron Rules
-
-This framework enforces strict anti-look-ahead bias measures:
-
-### Rule 1: AMC Gap Defense
-Earnings are often released After Market Close. You cannot buy at the closing price of the report day.
-- **Fix:** `Trade_Date = Signal_Date + 1 Day`
-- **Validation:** If 1D Sharpe > 3.0, you're likely capturing the overnight gap (a bug)
-
-### Rule 2: Three-Date Timestamping
-Every data point has:
-1. **Period End:** Fiscal quarter end
-2. **Report Date:** UTC timestamp of public release
-3. **Trade Date:** Execution timestamp (Report Date + 1)
-
-### Rule 3: Expanding Window Z-Scores
-Never use global quantiles—they leak future volatility.
-- **Fix:** Use `rolling(min_periods=N).mean()` on **shifted** (t-1) data
-- **Constraint:** Never include observation t in the distribution used to score observation t
-
-### Rule 4: Intra-Quarter Signal Estimation
-When entering before earnings (e.g., 20 trading days early), the full quarter's signal data isn't available yet.
-- **Fix:** Estimate the signal as a fraction of the expected final value based on calendar position within the quarter
-- **Constraint:** `entry_days_before` is measured in **trading days** (not calendar days). Max safe value is ~35-45 trading days (quarter start). Values beyond this would require trading on data that doesn't exist yet.
-- **Example:** At 30 trading days (~6 weeks) before earnings, roughly 50% of the quarter has elapsed, so the signal is scaled accordingly.
-
-## Strategy Types
-
-### Correlation-Aware (Primary)
-Uses signal direction × historical correlation to determine trade direction. Works especially well in "strong negative" correlation regimes where the relationship has flipped.
-
-### Momentum Baseline
-Price-only strategies for comparison. No fundamental input—pure technical momentum with z-score thresholds.
-
-### Signal-Based
-- **Threshold:** Enter when signal exceeds threshold
-- **Confirmation:** Signal + momentum alignment
-- **Divergence:** Signal and price moving in opposite directions
-
-## Exit Strategies
-
-- **Stop-Loss / Take-Profit:** Asymmetric exits (e.g., -5% SL, +10% TP)
-- **Trailing Stop:** Lock in gains as price moves favorably
-- **Fixed Holding:** Exit after N days or at next signal date
-- **Signal Change:** Exit when signal reverses
-
 ## Return Calculations
 
 ### Total Return
@@ -141,8 +95,6 @@ Where `n_years = n_trading_days / 252` (assuming 252 trading days per year).
 ```
 annualized = (1 + 6.416)^(1/7.6) - 1 ≈ 13.7%
 ```
-
-This allows fair comparison between strategies with different holding periods.
 
 ## Output Format
 
