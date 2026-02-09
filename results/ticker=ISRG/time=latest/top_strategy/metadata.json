@@ -1,0 +1,39 @@
+{
+  "name": "corr_aware_contemp_ma_noshift_e30d \u00d7 signal_change",
+  "entry": "corr_aware_contemp_ma_noshift_e30d",
+  "exit": "signal_change",
+  "entry_params": {
+    "entry_type": "correlation_aware",
+    "signal_col": "total_universe_resid",
+    "corr_col": "contemp_ma",
+    "min_signal_abs": 0.0,
+    "skip_regime_shifts": true,
+    "scale_by_confidence": false,
+    "confidence_col": "contemp",
+    "entry_days_before": 30,
+    "use_prior_quarter_corr": true
+  },
+  "exit_params": {
+    "exit_type": "signal_change"
+  },
+  "sharpe": 0.5609528316071734,
+  "total_return": 5.540306499117554,
+  "annualized_return": 0.13579296670674812,
+  "max_drawdown": -0.4707024690004243,
+  "n_trades": 12,
+  "win_rate": 0.75,
+  "signal_accuracy": 0.4,
+  "direction_accuracy": 0.7,
+  "skill_ratio": 0.7,
+  "hhi": 0.13990766717632516,
+  "top1_pct": 0.23998889375750693,
+  "top3_pct": 0.605055620903356,
+  "return_ex_top1": 3.077933029213116,
+  "return_ex_top3": 0.9269592769479105,
+  "profit_factor": 10.959283752808773,
+  "expectancy": 0.19054053433607235,
+  "tail_ratio": 3.904493676468237,
+  "max_single_contribution": 0.6038288153004758,
+  "buy_hold_total_return": 7.305951503307636,
+  "buy_hold_annualized_return": 0.2106312190617805
+}

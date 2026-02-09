@@ -17,50 +17,6 @@ import polars as pl
 
 from abovedata_backtesting.trades.trade_log import Trade, TradeLog
 
-
-def compare_entry_types(summary_df: pl.DataFrame) -> pl.DataFrame:
-    """Compare performance across entry types."""
-    return (
-        summary_df.group_by("entry_entry_type")
-        .agg(
-            pl.len().alias("count"),
-            pl.col("sharpe_ratio").mean().alias("avg_sharpe"),
-            pl.col("sharpe_ratio").max().alias("max_sharpe"),
-            pl.col("sharpe_ratio").median().alias("median_sharpe"),
-            pl.col("trade_n_trades").mean().alias("avg_trades"),
-            pl.col("trade_win_rate").mean().alias("avg_win_rate"),
-            pl.col("trade_total_return").mean().alias("avg_total_return"),
-            pl.col("trade_total_return").max().alias("max_total_return"),
-            pl.col("annualized_return").mean().alias("avg_ann_return"),
-        )
-        .sort("avg_sharpe", descending=True)
-    )
-
-
-def compare_corr_aware_variants(summary_df: pl.DataFrame) -> pl.DataFrame:
-    """Compare corr_aware variants by corr_col type."""
-    corr = summary_df.filter(pl.col("entry_entry_type") == "correlation_aware")
-    if corr.is_empty():
-        return pl.DataFrame({"note": ["No correlation_aware entries found"]})
-
-    corr_col = "entry_corr_col"
-    if corr_col not in corr.columns:
-        return corr
-
-    return (
-        corr.group_by(corr_col)
-        .agg(
-            pl.len().alias("count"),
-            pl.col("sharpe_ratio").mean().alias("avg_sharpe"),
-            pl.col("sharpe_ratio").max().alias("max_sharpe"),
-            pl.col("trade_n_trades").mean().alias("avg_trades"),
-            pl.col("trade_win_rate").mean().alias("avg_win_rate"),
-            pl.col("trade_total_return").max().alias("max_total_return"),
-        )
-        .sort("avg_sharpe", descending=True)
-    )
-
-
 # =============================================================================
 # Enums
 # =============================================================================
@@ -326,13 +282,6 @@ class TradeAnalyzer:
         # For momentum entries, direction comes from price, so this measures timing.
         # For corr_aware entries, direction = sign(signal) × sign(corr), so this
         # measures whether the full signal+correlation logic got the price move right.
-        price_went_up = (
-            trade.trade_return > 0 if trade.direction > 0 else trade.trade_return < 0
-        )
-        # Actually: trade_return already incorporates direction. If trade_return > 0,
-        # the trade direction was correct (we made money). But that conflates direction
-        # correctness with magnitude. We want: did price move in the direction we bet?
-        #
         # price_move = (exit_price / entry_price) - 1
         # trade_direction_correct = (direction > 0 and price_move > 0) or
         #                           (direction < 0 and price_move < 0)

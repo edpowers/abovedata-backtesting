@@ -1,0 +1,35 @@
+{
+  "name": "momentum_lb20_z1.0_e1d \u00d7 signal_change",
+  "entry": "momentum_lb20_z1.0_e1d",
+  "exit": "signal_change",
+  "entry_params": {
+    "entry_type": "momentum",
+    "lookback_days": 20,
+    "zscore_threshold": 1.0,
+    "zscore_window": 60,
+    "entry_days_before": 1
+  },
+  "exit_params": {
+    "exit_type": "signal_change"
+  },
+  "sharpe": 0.41916617777675647,
+  "total_return": 1.6171307032512003,
+  "annualized_return": 0.08261589922996726,
+  "max_drawdown": -0.5617500866335655,
+  "n_trades": 17,
+  "win_rate": 0.7647058823529411,
+  "signal_accuracy": 0.375,
+  "direction_accuracy": 0.75,
+  "skill_ratio": 0.75,
+  "hhi": 0.08092648648813874,
+  "top1_pct": 0.1527460898437313,
+  "top3_pct": 0.4084451526461147,
+  "return_ex_top1": 1.168091107422787,
+  "return_ex_top3": 0.5747946314192549,
+  "profit_factor": 4.660839321372781,
+  "expectancy": 0.06264762676931245,
+  "tail_ratio": 1.3337366877681962,
+  "max_single_contribution": 0.2071128811381857,
+  "buy_hold_total_return": -0.10697309412453404,
+  "buy_hold_annualized_return": -0.010163307077671768
+}

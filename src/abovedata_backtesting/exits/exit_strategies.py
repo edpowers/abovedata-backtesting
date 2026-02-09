@@ -166,7 +166,11 @@ class NextEarningsExit(ExitRule):
 @dataclass(frozen=True, slots=True)
 class StopLossTakeProfitExit(ExitRule):
     """
-    Exit when cumulative return from entry hits stop-loss or take-profit.
+    Exit when intraday price hits stop-loss or take-profit.
+
+    Uses high/low prices for realistic trigger detection.
+    When both trigger on the same bar, stop-loss takes priority
+    (conservative assumption: adverse move likely happened first).
 
     Parameters
     ----------
@@ -185,43 +189,77 @@ class StopLossTakeProfitExit(ExitRule):
 
     def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
         positions = daily["position"].to_list()
-        prices = daily["close"].to_list()
+        closes = daily["close"].to_list()
+        highs = daily["high"].to_list()
+        lows = daily["low"].to_list()
 
         new_positions: list[float] = []
+        exit_prices: list[float] = []
         entry_price: float | None = None
         in_position = False
         direction = 0.0
 
-        for pos, price in zip(positions, prices, strict=True):
+        for pos, close, high, low in zip(positions, closes, highs, lows, strict=True):
             if abs(pos) > 0.01 and not in_position:
-                # New entry
+                # New entry — use close as entry price
                 in_position = True
-                entry_price = price
+                entry_price = close
                 direction = 1.0 if pos > 0 else -1.0
                 new_positions.append(pos)
+                exit_prices.append(close)
             elif in_position and entry_price is not None:
-                ret = (price / entry_price - 1) * direction
-                if (
-                    ret <= self.stop_loss_pct
-                    or ret >= self.take_profit_pct
-                    or abs(pos) < 0.01
-                ):
+                # Check intraday extremes for stop/TP triggers
+                if direction > 0:
+                    # Long: low can trigger stop, high can trigger TP
+                    stop_ret = low / entry_price - 1
+                    tp_ret = high / entry_price - 1
+                else:
+                    # Short: high can trigger stop (adverse), low can trigger TP
+                    stop_ret = -(high / entry_price - 1)
+                    tp_ret = -(low / entry_price - 1)
+
+                stop_hit = stop_ret <= self.stop_loss_pct
+                tp_hit = tp_ret >= self.take_profit_pct
+
+                if stop_hit:
+                    # Exit at the stop price, not close
+                    stop_price = entry_price * (1 + self.stop_loss_pct * direction)
                     new_positions.append(0.0)
+                    exit_prices.append(stop_price)
+                    in_position, entry_price = False, None
+                elif tp_hit:
+                    tp_price = entry_price * (1 + self.take_profit_pct * direction)
+                    new_positions.append(0.0)
+                    exit_prices.append(tp_price)
+                    in_position, entry_price = False, None
+                elif abs(pos) < 0.01:
+                    # Signal says exit (no stop/TP, just signal change)
+                    new_positions.append(0.0)
+                    exit_prices.append(close)
                     in_position, entry_price = False, None
                 else:
                     new_positions.append(pos)
+                    exit_prices.append(close)
             else:
                 new_positions.append(pos)
+                exit_prices.append(close)
                 if abs(pos) < 0.01:
                     in_position, entry_price = False, None
 
-        return daily.with_columns(pl.Series("position", new_positions))
+        return daily.with_columns(
+            pl.Series("position", new_positions),
+            pl.Series("exit_price", exit_prices),
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class TrailingStopExit(ExitRule):
     """
-    Exit when price retraces by a percentage from peak (long) or trough (short).
+    Exit when intraday price retraces by a percentage from peak/trough.
+
+    Peak/trough updates from high/low BEFORE checking the stop on
+    the same bar. This means a new high that then reverses intraday
+    will correctly trigger the trailing stop from the new peak.
 
     Parameters
     ----------
@@ -237,37 +275,65 @@ class TrailingStopExit(ExitRule):
 
     def apply(self, daily: pl.DataFrame) -> pl.DataFrame:
         positions = daily["position"].to_list()
-        prices = daily["close"].to_list()
+        closes = daily["close"].to_list()
+        highs = daily["high"].to_list()
+        lows = daily["low"].to_list()
 
         new_positions: list[float] = []
+        exit_prices: list[float] = []
         peak: float | None = None
         trough: float | None = None
         in_position = False
         direction = 0.0
 
-        for pos, price in zip(positions, prices, strict=True):
+        for pos, close, high, low in zip(positions, closes, highs, lows, strict=True):
             if abs(pos) > 0.01 and not in_position:
                 # New entry
                 in_position = True
                 direction = 1.0 if pos > 0 else -1.0
-                peak = price if direction > 0 else None
-                trough = price if direction < 0 else None
+                if direction > 0:
+                    peak = high  # Best price seen (use high, not close)
+                    trough = None
+                else:
+                    trough = low  # Best price seen for short
+                    peak = None
                 new_positions.append(pos)
+                exit_prices.append(close)
+
             elif in_position:
                 should_exit = False
+                stop_exit_price = close  # default
+
                 if direction > 0 and peak is not None:
-                    peak = max(peak, price)
-                    should_exit = (price / peak - 1) <= -self.trailing_stop_pct
+                    # Update peak from today's high FIRST
+                    peak = max(peak, high)
+                    # Then check if low breached trailing stop from peak
+                    stop_price = peak * (1 - self.trailing_stop_pct)
+                    if low <= stop_price:
+                        should_exit = True
+                        stop_exit_price = stop_price
+
                 elif direction < 0 and trough is not None:
-                    trough = min(trough, price)
-                    should_exit = (price / trough - 1) >= self.trailing_stop_pct
+                    # Update trough from today's low FIRST
+                    trough = min(trough, low)
+                    # Then check if high breached trailing stop from trough
+                    stop_price = trough * (1 + self.trailing_stop_pct)
+                    if high >= stop_price:
+                        should_exit = True
+                        stop_exit_price = stop_price
 
                 if should_exit or abs(pos) < 0.01:
                     new_positions.append(0.0)
+                    exit_prices.append(stop_exit_price if should_exit else close)
                     in_position, peak, trough = False, None, None
                 else:
                     new_positions.append(pos)
+                    exit_prices.append(close)
             else:
                 new_positions.append(pos)
+                exit_prices.append(close)
 
-        return daily.with_columns(pl.Series("position", new_positions))
+        return daily.with_columns(
+            pl.Series("position", new_positions),
+            pl.Series("exit_price", exit_prices),
+        )

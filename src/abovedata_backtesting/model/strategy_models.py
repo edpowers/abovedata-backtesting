@@ -311,4 +311,3 @@ class Strategy(ABC):
             return None
 
         return float((current_price / past_price) - 1)
-

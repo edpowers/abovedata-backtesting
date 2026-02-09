@@ -1,0 +1,39 @@
+{
+  "name": "corr_aware_leading_ma_noshift_e30d \u00d7 trailing_stop_5%",
+  "entry": "corr_aware_leading_ma_noshift_e30d",
+  "exit": "trailing_stop_5%",
+  "entry_params": {
+    "entry_type": "correlation_aware",
+    "signal_col": "visible_revenue_resid",
+    "corr_col": "leading_ma",
+    "min_signal_abs": 0.0,
+    "skip_regime_shifts": true,
+    "scale_by_confidence": false,
+    "confidence_col": "contemp",
+    "entry_days_before": 30,
+    "use_prior_quarter_corr": true
+  },
+  "exit_params": {
+    "exit_type": "trailing_stop_5%"
+  },
+  "sharpe": 1.510150480804233,
+  "total_return": 6.462526319611956,
+  "annualized_return": 0.2834246103423901,
+  "max_drawdown": -0.2933255046438852,
+  "n_trades": 197,
+  "win_rate": 0.5177664974619289,
+  "signal_accuracy": 0.5371428571428571,
+  "direction_accuracy": 0.5028571428571429,
+  "skill_ratio": 0.5028571428571429,
+  "hhi": 0.010233454756889585,
+  "top1_pct": 0.06504997927495898,
+  "top3_pct": 0.14381137117973244,
+  "return_ex_top1": 4.6175524659923575,
+  "return_ex_top3": 2.9087504592044975,
+  "profit_factor": 1.8370315963328445,
+  "expectancy": 0.011677635516553844,
+  "tail_ratio": 2.150415923943811,
+  "max_single_contribution": 0.32843019531882245,
+  "buy_hold_total_return": 7.012989470640454,
+  "buy_hold_annualized_return": 0.20671249431030136
+}

@@ -1,0 +1,9 @@
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.12
+    hooks:
+      - id: ruff-format
+        args: [--config, pyproject.toml]
+      - id: ruff
+        args: [--config, pyproject.toml, --fix, --exit-non-zero-on-fix]

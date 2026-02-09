@@ -14,13 +14,10 @@ wheels/
 AGENTS.md
 CONTEXT.md
 
-
 .DS_Store
 
 *.parquet
 
-# Exclude all results except the latest runs (ignore other time= folders)
-results/ticker=DE/time=*/
-!results/ticker=DE/time=20260208_152805/
-results/ticker=AGCO/time=*/
-!results/ticker=AGCO/time=20260208_153043/
+# Exclude all results except the latest runs (ignore any time= folder that isn't "latest")
+results/ticker=*/time=*
+!results/ticker=*/time=latest

@@ -11,7 +11,6 @@ confidence scores, and regime shift detection.
 
 import argparse
 from datetime import date
-from typing import Any
 
 import polars as pl
 from IPython.display import display
@@ -34,15 +33,15 @@ from abovedata_backtesting.processors.strategy_processor import (
     GridSearchResult,
     StrategyProcessor,
 )
-from abovedata_backtesting.trades.trade_analyzer import (
-    TradeAnalyzer,
+from abovedata_backtesting.trades.analysis_utils import (
+    analyze_best_strategies,
     compare_corr_aware_variants,
     compare_entry_types,
 )
 from abovedata_backtesting.trades.trade_save_results import save_results
 
 
-def run_gated_grid_search(
+def run_grid_search(
     ticker: str = "DE",
     signal_method: str = "stl_p4_s7_robustTrue",
     start_date: date | None = date(2015, 1, 1),
@@ -58,10 +57,18 @@ def run_gated_grid_search(
     # Load RAW STL processor output (not the joined/renamed version)
     signals = load_signal_data(ticker, method=signal_method, name="processed_data")
 
+    visible_col = None
+    for visible_col in ["visible_revenue", "total_universe"]:
+        if visible_col in signals:
+            break
+
+    if not visible_col:
+        raise ValueError("need a valid visible col")
+
     processor = StrategyProcessor(
         ticker=ticker,
         signals=signals,
-        visible_col="visible_revenue",
+        visible_col=visible_col,
         start_date=start_date,
         end_date=end_date,
         debug=debug,
@@ -80,14 +87,14 @@ def run_gated_grid_search(
     )
 
     base_signal = SignalThresholdEntry.grid(
-        signal_col=["visible_revenue_resid"],
+        signal_col=[f"{visible_col}_resid"],
         long_threshold=[0.3, 0.5, 1.0],
         short_threshold=[-0.3, -0.5, -1.0],
         entry_days_before=entry_days_before,
     )
 
     base_confirm = SignalMomentumEntry.grid(
-        signal_col=["visible_revenue_resid"],
+        signal_col=[f"{visible_col}_resid"],
         signal_threshold=[0.3, 0.5],
         lookback_days=[10, 20],
         momentum_zscore_threshold=[0.3, 0.5],
@@ -95,7 +102,7 @@ def run_gated_grid_search(
     )
 
     base_divergence = DivergenceEntry.grid(
-        signal_col=["visible_revenue_resid"],
+        signal_col=[f"{visible_col}_resid"],
         lookback_days=[20],
         divergence_zscore=[0.5, 1.0],
         fundamental_threshold=[0.5, 1.0],
@@ -108,7 +115,7 @@ def run_gated_grid_search(
     # =========================================================================
 
     corr_aware = CorrelationAwareEntry.grid(
-        signal_col=["visible_revenue_resid"],
+        signal_col=[f"{visible_col}_resid"],
         corr_col=["contemp", "leading", "contemp_ma", "leading_ma"],
         min_signal_abs=[0.0, 0.1],
         skip_regime_shifts=[True, False],
@@ -164,132 +171,15 @@ def run_gated_grid_search(
     return summary_df, results, processor
 
 
-def analyze_best_strategies(
-    results: list[GridSearchResult],
-    processor: StrategyProcessor,
-    summary_df: pl.DataFrame,
-    top_n: int = 5,
-) -> None:
-    """Analyze top N by Sharpe and top N by total return, showing trades."""
-    analyzer = TradeAnalyzer(
-        signals=processor.signals,
-        benchmark_data=processor._benchmark_data,
-        visible_col="visible_revenue",
-    )
-
-    # Top by total return — re-sort
-    return_sorted = sorted(
-        [r for r in results if r.trade_log.n_trades >= 10],
-        key=lambda r: r.trade_log.total_return,
-        reverse=True,
-    )
-
-    # Merge unique (avoid analyzing same strategy twice)
-    seen_names: set[str] = set()
-    analysis_queue: list[tuple[str, Any]] = []
-
-    # Top by Sharpe (already sorted)
-    for r in results[:top_n]:
-        key = f"{r.entry_rule.name} × {r.exit_rule.name}"
-        if key not in seen_names:
-            seen_names.add(key)
-            analysis_queue.append(("sharpe", r))
-
-    for r in return_sorted[:top_n]:
-        key = f"{r.entry_rule.name} × {r.exit_rule.name}"
-        if key not in seen_names:
-            seen_names.add(key)
-            analysis_queue.append(("total_return", r))
-
-    for ranking, result in analysis_queue:
-        label = "📈 TOP BY SHARPE" if ranking == "sharpe" else "💰 TOP BY TOTAL RETURN"
-        print(f"\n{'=' * 70}")
-        print(f"{label}: {result.entry_rule.name} × {result.exit_rule.name}")
-        print(f"{'=' * 70}")
-
-        analysis = analyzer.analyze(result.trade_log, processor._market_data)
-        summary = analysis.full_summary()
-
-        # Headline metrics
-        sharpe = result.metrics.risk.sharpe_ratio
-        total_ret = result.trade_log.total_return
-        ann_ret = result.metrics.returns.annualized_return
-        max_dd = result.metrics.risk.max_drawdown
-
-        print(
-            f"  Sharpe: {sharpe:.3f}  |  Total Return: {total_ret:.1%}  |  "
-            f"Ann Return: {ann_ret:.1%}  |  Max DD: {max_dd:.1%}"
-        )
-        print(
-            f"  Trades: {summary['n_trades']}  |  Win Rate: {summary['win_rate']:.1%}  |  "
-            f"Direction Accuracy: {summary['direction_accuracy']:.1%}  |  "
-            f"Signal Accuracy: {summary['signal_accuracy']:.1%}  |  "
-            f"Skill Ratio: {summary['skill_ratio']:.1%}"
-        )
-
-        # Diversity metrics
-        print("\n  📊 Diversity & Concentration:")
-        print(
-            f"    HHI: {summary['hhi']:.4f}  (1/{summary['n_trades']}="
-            f"{1 / summary['n_trades']:.4f} = perfectly diverse)"
-        )
-        print(
-            f"    Top-1 trade: {summary['top1_pct']:.1%} of gross profit  |  "
-            f"Top-3: {summary['top3_pct']:.1%}  |  Top-5: {summary['top5_pct']:.1%}"
-        )
-        print(
-            f"    Return ex-top-1: {summary['return_ex_top1']:.1%}  |  "
-            f"ex-top-3: {summary['return_ex_top3']:.1%}"
-        )
-        print(f"    Max single trade: {summary['max_single_contribution']:.1%}")
-        print(
-            f"    Profit factor: {summary['profit_factor']:.2f}  |  "
-            f"Expectancy: {summary['expectancy']:.4f}  |  "
-            f"Tail ratio: {summary['tail_ratio']:.2f}"
-        )
-        print()
-
-        # Outcome breakdown
-        print("  Outcome Breakdown:")
-        display(analysis.outcome_summary())
-
-        # Regime breakdown
-        print("  Correlation Regime:")
-        display(analysis.regime_summary())
-
-        # Trade list — show all trades with key fields
-        trades_df = analysis.to_dataframe()
-        trade_display_cols = [
-            "entry_date",
-            "exit_date",
-            "direction",
-            "holding_days",
-            "trade_return",
-            "signal_date",
-            "signal_value",
-            "correlation_regime",
-            "signal_quality",
-            "actual_beat_consensus",
-            "signal_correct",
-            "trade_direction_correct",
-            "outcome",
-            "benchmark_return",
-            "alpha_contribution",
-        ]
-        available = [c for c in trade_display_cols if c in trades_df.columns]
-        print(f"\n  All {trades_df.height} Trades:")
-        display(trades_df.select(available))
-
-
 def main(ticker: str = "DE") -> None:
     pl.Config.set_tbl_cols(12)
     pl.Config.set_tbl_rows(20)
 
     print(f"\n{'=' * 60}")
-    print(f"Gated Strategy Grid Search: {ticker}")
+    print(f"Strategy Grid Search: {ticker}")
     print(f"{'=' * 60}\n")
 
-    summary_df, results, processor = run_gated_grid_search(
+    summary_df, results, processor = run_grid_search(
         ticker=ticker,
         start_date=date(2015, 1, 1),
         debug=True,
@@ -385,7 +275,11 @@ def main(ticker: str = "DE") -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run correlation-aware strategy grid search")
-    parser.add_argument("--ticker", type=str, default="DE", help="Stock ticker symbol (default: DE)")
+    parser = argparse.ArgumentParser(
+        description="Run correlation-aware strategy grid search"
+    )
+    parser.add_argument(
+        "--ticker", type=str, default="DE", help="Stock ticker symbol (default: DE)"
+    )
     args = parser.parse_args()
     main(ticker=args.ticker)

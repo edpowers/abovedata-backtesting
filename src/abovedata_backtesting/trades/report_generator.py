@@ -595,23 +595,40 @@ class StrategyReport:
         return "\n".join(lines)
 
     def _headline_metrics(self, m: dict) -> str:
-        return textwrap.dedent(f"""\
-            ## Headline Performance
-
-            | Metric | Value |
-            |---|---|
-            | **Total Return** | {_fmt_pct(m.get('total_return'))} |
-            | **Annualized Return** | {_fmt_pct(m.get('annualized_return'))} |
-            | **Sharpe Ratio** | {_fmt_f(m.get('sharpe'), 3)} |
-            | **Max Drawdown** | {_fmt_pct(m.get('max_drawdown'))} |
-            | **Total Trades** | {m.get('n_trades')} |
-            | **Win Rate** | {_fmt_pct(m.get('win_rate'))} |
-            | **Signal Accuracy** | {_fmt_pct(m.get('signal_accuracy'))} |
-            | **Direction Accuracy** | {_fmt_pct(m.get('direction_accuracy'))} |
-            | **Skill Ratio** | {_fmt_pct(m.get('skill_ratio'))} |
-            | **Profit Factor** | {_fmt_f(m.get('profit_factor'))} |
-            | **Expectancy** | {_fmt_f(m.get('expectancy'), 4)} |
-            | **Tail Ratio** | {_fmt_f(m.get('tail_ratio'))} |""")
+        lines = [
+            "## Headline Performance",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| **Total Return** | {_fmt_pct(m.get('total_return'))} |",
+            f"| **Annualized Return** | {_fmt_pct(m.get('annualized_return'))} |",
+            f"| **Sharpe Ratio** | {_fmt_f(m.get('sharpe'), 3)} |",
+            f"| **Max Drawdown** | {_fmt_pct(m.get('max_drawdown'))} |",
+            f"| **Total Trades** | {m.get('n_trades')} |",
+            f"| **Win Rate** | {_fmt_pct(m.get('win_rate'))} |",
+            f"| **Signal Accuracy** | {_fmt_pct(m.get('signal_accuracy'))} |",
+            f"| **Direction Accuracy** | {_fmt_pct(m.get('direction_accuracy'))} |",
+            f"| **Skill Ratio** | {_fmt_pct(m.get('skill_ratio'))} |",
+            f"| **Profit Factor** | {_fmt_f(m.get('profit_factor'))} |",
+            f"| **Expectancy** | {_fmt_f(m.get('expectancy'), 4)} |",
+            f"| **Tail Ratio** | {_fmt_f(m.get('tail_ratio'))} |",
+        ]
+        if "buy_hold_total_return" in m and "buy_hold_annualized_return" in m:
+            bh_total = m["buy_hold_total_return"]
+            bh_ann = m["buy_hold_annualized_return"]
+            strat_total = m.get("total_return") or 0
+            lines.extend(
+                [
+                    "",
+                    "### vs Buy & Hold (same ticker)",
+                    "",
+                    "| Metric | Buy & Hold | Strategy | Alpha |",
+                    "|---|---|---|---|",
+                    f"| Total Return | {_fmt_pct(bh_total)} | {_fmt_pct(strat_total)} | {_fmt_pct(strat_total - bh_total)} |",
+                    f"| Annualized Return | {_fmt_pct(bh_ann)} | {_fmt_pct(m.get('annualized_return'))} | — |",
+                ]
+            )
+        return "\n".join(lines)
 
     def _diversity_assessment(self, m: dict) -> str:
         n = m.get("n_trades", 1)

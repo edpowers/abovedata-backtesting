@@ -2,12 +2,14 @@
 
 import datetime
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from pydantic import BaseModel, computed_field
 
+from abovedata_backtesting.processors.benchmark_processor import buy_and_hold_from_data
 from abovedata_backtesting.trades.report_generator import StrategyReport
 from abovedata_backtesting.trades.trade_analyzer import TradeAnalyzer
 
@@ -46,6 +48,11 @@ class TradeSummaryPaths(BaseModel):
     def run_dir(self) -> Path:
         return self.output_dir.joinpath(f"ticker={self.ticker}", f"time={self.ts}")
 
+    @computed_field
+    @property
+    def latest_dir(self) -> Path:
+        return self.output_dir.joinpath(f"ticker={self.ticker}", "time=latest")
+
     def write_dataframe(self, df: pl.DataFrame, path: Path) -> None:
         df.write_parquet(path.with_suffix(".parquet"), mkdir=True)
         df.write_csv(path.with_suffix(".csv"))
@@ -76,11 +83,29 @@ def save_results(
     """
     trade_summary_paths = TradeSummaryPaths(ticker=ticker, output_dir=Path(output_dir))
     top_dir = trade_summary_paths.run_dir / "top_strategy"
+    if trade_summary_paths.latest_dir.exists():
+        shutil.rmtree(trade_summary_paths.latest_dir)
 
     # 1. Summary parquet — the full grid
     summary_df.write_parquet(
         trade_summary_paths.run_dir / "summary.parquet", mkdir=True
     )
+
+    # Buy-and-hold (same ticker) via benchmark processor for comparison
+    buy_hold_result = None
+    if processor._market_data is not None:
+        buy_hold_result = buy_and_hold_from_data(
+            processor._market_data,
+            processor._benchmark_data,
+            ticker=ticker,
+            benchmark_ticker=getattr(processor, "benchmark_ticker", "SPY"),
+        )
+    buy_hold = {}
+    if buy_hold_result is not None:
+        buy_hold = {
+            "buy_hold_total_return": buy_hold_result.metrics.returns.total_return,
+            "buy_hold_annualized_return": buy_hold_result.metrics.returns.annualized_return,
+        }
 
     # 2. Per-strategy trade-level analysis for top strategies
     analyzer = TradeAnalyzer(
@@ -145,6 +170,7 @@ def save_results(
             "expectancy": full["expectancy"],
             "tail_ratio": full["tail_ratio"],
             "max_single_contribution": full["max_single_contribution"],
+            **buy_hold,
         }
         strategy_summaries.append(strat_summary)
 
@@ -172,6 +198,13 @@ def save_results(
             f"Trades: {best_summary['n_trades']}  |  "
             f"HHI: {best_summary['hhi']:.4f}"
         )
+        if buy_hold:
+            bh_total = buy_hold["buy_hold_total_return"]
+            bh_ann = buy_hold["buy_hold_annualized_return"]
+            print(
+                f"   Buy & Hold ({ticker}): {bh_total:.1%} total  |  {bh_ann:.1%} ann.  |  "
+                f"Strategy alpha: {(best_summary['total_return'] - bh_total):.1%} total"
+            )
         report = StrategyReport(
             metadata=best_summary, trades_df=best_trades, ticker=ticker
         )
@@ -184,6 +217,7 @@ def save_results(
         "total_strategies": summary_df.height,
         "top_strategies_saved": len(strategy_summaries),
         "strategies": strategy_summaries,
+        **buy_hold,
     }
 
     save_json(trade_summary_paths.run_dir / "metadata.json", metadata)
@@ -192,5 +226,10 @@ def save_results(
     print(f"   summary.parquet: {summary_df.height} strategies")
     print(f"   trades_by_strategy/: {len(strategy_summaries)} strategy trade logs")
     print("   metadata.json: run config + top strategy summaries")
+
+    # Then copy over all files from the run_dir to the latest:
+    shutil.copytree(
+        trade_summary_paths.run_dir, trade_summary_paths.latest_dir, dirs_exist_ok=True
+    )
 
     return trade_summary_paths.run_dir

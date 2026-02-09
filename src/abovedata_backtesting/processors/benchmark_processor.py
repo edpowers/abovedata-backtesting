@@ -21,9 +21,7 @@ from abovedata_backtesting.benchmarks.benchmark_results import (
     BenchmarkResults,
 )
 from abovedata_backtesting.data_loaders.load_market_data import MarketDataLoaders
-from abovedata_backtesting.model.metrics import (
-    BacktestMetrics,
-)
+from abovedata_backtesting.model.metrics import BacktestMetrics
 
 # =============================================================================
 # Configuration
@@ -177,10 +175,50 @@ class BenchmarkProcessor:
         return BacktestMetrics.from_dataframe(daily_df, benchmark_ticker=bm_ticker)
 
 
+def buy_and_hold_from_data(
+    market_data: pl.DataFrame,
+    benchmark_data: pl.DataFrame | None,
+    ticker: str,
+    benchmark_ticker: str = "SPY",
+) -> BenchmarkResult | None:
+    """
+    Evaluate buy-and-hold (100% long) using already-loaded market data.
+    Uses the same metrics path as BenchmarkProcessor for consistency.
+    """
+    if market_data.is_empty() or "asset_return" not in market_data.columns:
+        return None
+    daily_df = market_data.with_columns(
+        pl.lit(1.0).alias("position"),
+        (pl.col("asset_return") * pl.lit(1.0)).alias("strategy_return"),
+    )
+    if benchmark_data is not None and not benchmark_data.is_empty():
+        bm = benchmark_data.select(
+            "date",
+            pl.col("asset_return").alias("benchmark_return"),
+        )
+        daily_df = daily_df.join(bm, on="date", how="inner")
+    else:
+        daily_df = daily_df.with_columns(
+            pl.col("asset_return").alias("benchmark_return"),
+        )
+    metrics = BacktestMetrics.from_dataframe(
+        daily_df.select(
+            "date", "strategy_return", "asset_return", "benchmark_return", "position"
+        ),
+        benchmark_ticker=benchmark_ticker,
+    )
+    return BenchmarkResult(
+        strategy_name=f"buyhold_{ticker}",
+        ticker=ticker,
+        metrics=metrics,
+        daily_returns=daily_df,
+    )
+
 
 __all__ = [
     "BenchmarkConfig",
     "BenchmarkProcessor",
     "BenchmarkResult",
     "BenchmarkResults",
+    "buy_and_hold_from_data",
 ]

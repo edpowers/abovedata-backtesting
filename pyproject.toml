@@ -16,11 +16,13 @@ dependencies = [
     "numpy>=2.4.1",
     "rich>=14.3.2",
     "statsmodels>=0.14.6",
+    "boto3>=1.42.44",
 ]
 
 [dependency-groups]
 dev = [
     "ipython>=9.10.0",
+    "pre-commit>=4.5.1",
     "pyright>=1.1.408",
     "ruff>=0.14.11",
     "ty>=0.0.11",
@@ -70,8 +72,8 @@ line-ending = "auto"
 
 
 [tool.basedpyright]
-extraPaths = ["abovedata_backtesting"]
-include = ["abovedata_backtesting"]
+extraPaths = ["src/abovedata_backtesting"]
+include = ["src/abovedata_backtesting"]
 ignore = [".venv"]
 venvPath = "."
 venv = ".venv"
