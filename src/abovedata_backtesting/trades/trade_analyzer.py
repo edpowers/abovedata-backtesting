@@ -428,6 +428,14 @@ class TradeAnalysis:
     def n_trades(self) -> int:
         return len(self.trades)
 
+    @property
+    def min_date(self) -> dt.date:
+        return self.to_dataframe()["entry_date"].dt.min()
+
+    @property
+    def max_date(self) -> dt.date:
+        return self.to_dataframe()["exit_date"].dt.max()
+
     # ── Accuracy Properties (clearly defined) ─────────────────────
 
     @property

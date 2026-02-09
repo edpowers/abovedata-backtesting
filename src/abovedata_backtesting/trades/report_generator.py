@@ -1193,13 +1193,15 @@ class StrategyReport:
             short_ret = (
                 float(short_ret_raw) if isinstance(short_ret_raw, (int, float)) else 0.0
             )
-            bh_proxy = m.get("buy_hold_return", None)
+            # Use aligned buy-and-hold (same date range as strategy)
+            bh_proxy = m.get("buy_hold_total_return", None)
 
             # If stock went up significantly but shorts are profitable, it's mean-reversion
             bh_val = float(bh_proxy) if isinstance(bh_proxy, (int, float)) else 0.0
             if bh_val > 0.5 and short_ret > 0 and len(shorts) > 2:
                 flags.append(
-                    f"- **BETA_DISGUISED:** Stock had {_fmt_pct(bh_proxy)} buy-and-hold return, "
+                    f"- **BETA_DISGUISED:** Stock had {_fmt_pct(bh_val)} buy-and-hold return "
+                    f"(aligned to strategy period: {m.get('buy_hold_start_date')} to {m.get('buy_hold_end_date')}), "
                     f"yet {len(shorts)} short trades returned {_fmt_pct(short_ret)} total. "
                     "Winning shorts in an uptrending stock suggests mean-reversion capture "
                     "within the trend, not directional prediction from signal data."

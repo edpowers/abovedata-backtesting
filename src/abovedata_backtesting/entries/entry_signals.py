@@ -68,68 +68,146 @@ def _apply_entry_positions(
     directions: dict[dt.date, float],
     strengths: dict[dt.date, float],
     confidences: dict[dt.date, float],
-    contexts: dict[dt.date, EntryContext] | None = None,
+    contexts: dict[dt.date, EntryContext],
 ) -> pl.DataFrame:
     """
     Apply sparse entry positions to market data, then forward-fill.
 
-    If contexts is provided, also writes entry context columns that
-    are forward-filled alongside position/signal_strength/confidence.
+    Vectorized implementation: builds a sparse entries DataFrame,
+    joins onto market_data by entry_date, then forward-fills.
+
+    Writes:
+        position, signal_strength, confidence, signal_id
+        + entry context columns (if contexts provided)
     """
-    entry_dates_set = set(entry_map.keys())
-    dates = market_data["date"].to_list()
-
-    positions: list[float] = []
-    signal_strengths: list[float] = []
-    confs: list[float] = []
-    current_pos = 0.0
-    current_strength = 0.0
-    current_conf = 0.0
-
-    # Context tracking
-    has_context = contexts is not None and len(contexts) > 0
-    ctx_lists: dict[str, list[Any]] = {}
-    ctx_current: dict[str, Any] = {}
-    if has_context:
+    # Build sparse entries DataFrame: one row per entry date
+    rows: list[dict[str, Any]] = []
+    for signal_id, entry_date in enumerate(sorted(entry_map.keys()), start=1):
+        sig_date = entry_map[entry_date]
+        row: dict[str, Any] = {
+            "_entry_date": entry_date,
+            "_position": directions.get(sig_date, 0.0),
+            "_signal_strength": strengths.get(sig_date, 0.0),
+            "_confidence": confidences.get(sig_date, 0.0),
+            "_signal_id": signal_id,
+        }
+        # Add context columns
+        ctx_row = _context_to_row(contexts.get(sig_date, EntryContext.make_empty()))
         for col in ENTRY_CONTEXT_COLUMNS:
-            ctx_lists[col] = []
-            ctx_current[col] = None
+            row[f"_{col}"] = ctx_row.get(col, None)
 
-    for d in dates:
-        if d in entry_dates_set:
-            sig_date = entry_map[d]
-            new_pos = directions.get(sig_date, 0.0)
-            current_pos = new_pos
-            current_strength = strengths.get(sig_date, 0.0)
-            current_conf = confidences.get(sig_date, 0.0)
+        rows.append(row)
 
-            if has_context and contexts is not None:
-                ctx = contexts.get(sig_date)
-                if ctx is not None:
-                    ctx_current = _context_to_row(ctx)
-                else:
-                    ctx_current = {col: None for col in ENTRY_CONTEXT_COLUMNS}
-
-        positions.append(current_pos)
-        signal_strengths.append(current_strength)
-        confs.append(current_conf)
-
-        if has_context:
-            for col in ENTRY_CONTEXT_COLUMNS:
-                ctx_lists[col].append(ctx_current.get(col))
-
-    result = market_data.with_columns(
-        pl.Series("position", positions, dtype=pl.Float64),
-        pl.Series("signal_strength", signal_strengths, dtype=pl.Float64),
-        pl.Series("confidence", confs, dtype=pl.Float64),
+    # Join onto market_data by date
+    result = market_data.join(
+        pl.DataFrame(rows),
+        left_on="date",
+        right_on="_entry_date",
+        how="left",
     )
 
-    # Add context columns if present
-    if has_context:
-        for col, values in ctx_lists.items():
-            result = result.with_columns(pl.Series(col, values))
+    # Forward-fill columns
+    for src, dst, dtype in [
+        ("_position", "position", pl.Float64),
+        ("_signal_strength", "signal_strength", pl.Float64),
+        ("_confidence", "confidence", pl.Float64),
+        ("_signal_id", "signal_id", pl.Int32),
+    ]:
+        result = result.with_columns(
+            pl.col(src)
+            .forward_fill()
+            .fill_null(0 if dtype != pl.Int32 else 0)
+            .cast(dtype)
+            .alias(dst),
+        )
+
+    # Forward-fill context columns
+    for col in ENTRY_CONTEXT_COLUMNS:
+        if f"_{col}" in result.columns:
+            result = result.with_columns(
+                pl.col(f"_{col}").forward_fill().alias(col),
+            )
+
+    # Drop temporary columns
+    drop_cols = [c for c in result.columns if c.startswith("_")]
+    result = result.drop(drop_cols)
 
     return result
+
+
+def enforce_max_entries(
+    daily: pl.DataFrame,
+    max_entries_per_signal: int = 1,
+) -> pl.DataFrame:
+    """
+    Prevent phantom re-entries after an exit fires within the same signal period.
+
+    After an exit rule sets position to 0, the forward-filled position from
+    _apply_entry_positions would re-enter the same direction on the next day.
+    This function enforces that once a position is exited for a given signal_id,
+    at most `max_entries_per_signal` entries are allowed per signal period.
+
+    Parameters
+    ----------
+    daily : pl.DataFrame
+        Must have columns: position, signal_id.
+    max_entries_per_signal : int
+        Maximum number of entry→exit round-trips allowed per signal period.
+        1 = one trade per signal (default, prevents all re-entries).
+        2 = allow one re-entry after the first exit, etc.
+
+    Returns
+    -------
+    pl.DataFrame
+        Same DataFrame with position zeroed out for excess re-entries.
+    """
+    if "signal_id" not in daily.columns or "position" not in daily.columns:
+        return daily
+
+    positions = daily["position"].to_list()
+    signal_ids = daily["signal_id"].to_list()
+    n = len(positions)
+
+    # Track entry count per signal_id
+    entries_by_signal: dict[int, int] = {}
+    in_trade = False
+    current_signal_id = 0
+    suppressed = False  # True when we've exceeded max entries for this signal
+
+    for i in range(n):
+        sid = signal_ids[i]
+        pos = positions[i]
+
+        # New signal period — reset
+        if sid != current_signal_id:
+            current_signal_id = sid
+            entries_by_signal[sid] = 0
+            in_trade = False
+            suppressed = False
+
+        if suppressed:
+            # We've exceeded max entries for this signal — force flat
+            positions[i] = 0.0
+            continue
+
+        pos_active = abs(pos) > 0.01
+
+        if pos_active and not in_trade:
+            # New entry within this signal period
+            entries_by_signal[sid] = entries_by_signal.get(sid, 0) + 1
+            if entries_by_signal[sid] > max_entries_per_signal:
+                # Exceeded max — suppress this and all subsequent entries
+                suppressed = True
+                positions[i] = 0.0
+                continue
+            in_trade = True
+        elif not pos_active and in_trade:
+            # Exit happened
+            in_trade = False
+
+    return daily.with_columns(
+        pl.Series("position", positions, dtype=pl.Float64),
+    )
 
 
 def _context_to_row(ctx: EntryContext) -> dict[str, Any]:

@@ -46,6 +46,7 @@ from abovedata_backtesting.exits.exit_strategies import (
     ExitRule,
     FixedHoldingExit,
 )
+from abovedata_backtesting.model.metrics import BacktestMetrics
 from abovedata_backtesting.trades.trade_log import TradeLog
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
         GridSearchResult,
         StrategyProcessor,
     )
+    from abovedata_backtesting.trades.trade_analyzer import TradeAnalysis
 
 
 # =============================================================================
@@ -195,13 +197,6 @@ class AlphaAttributionResult:
     @property
     def is_beta_in_disguise(self) -> bool:
         """True if winning shorts in an uptrending stock (capturing mean reversion)."""
-        # If stock went up (buy_and_hold > 0) but shorts won, it's mean-reversion
-        if (
-            self.buy_and_hold_return > 0.5
-            and self.short_return > 0
-            and self.n_short > 2
-        ):
-            return True
         # If signal accuracy is very low but win rate is very high, it's not skill
         if self.signal_accuracy < 0.3 and self.win_rate > 0.8:
             return True
@@ -385,12 +380,20 @@ class RobustnessValidator:
         The processor used to generate the result (needed for re-running).
     result : GridSearchResult
         The result to validate.
+    trade_analysis : TradeAnalysis | None
+        Optional pre-computed trade analysis (avoids re-analyzing).
+        If None, will create a new TradeAnalyzer instance.
+    buy_hold_return : float | None
+        Optional pre-computed buy-and-hold return (aligned to strategy period).
+        If None, will compute from processor's market data.
     n_random_trials : int
         Number of random entry permutations for baseline test.
     """
 
     processor: StrategyProcessor
     result: GridSearchResult
+    trade_analysis: "TradeAnalysis | None" = None
+    buy_hold_return: float | None = None
     n_random_trials: int = 100
 
     def run_all(self) -> RobustnessReport:
@@ -545,18 +548,18 @@ class RobustnessValidator:
     def _run_alpha_attribution(self) -> AlphaAttributionResult:
         """Decompose returns into beta and alpha."""
         trades = self.result.trade_log.trades
-        daily = self.result.daily_df
 
-        # Buy-and-hold return
-        if len(daily) > 0:
-            first_close = daily["close"][0]
-            last_close = daily["close"][-1]
-            bh_return = (last_close / first_close) - 1
-        else:
-            bh_return = 0.0
+        if not trades:
+            raise
 
         # Total return from strategy
         total_return = self.result.trade_log.total_return
+
+        # Use pre-computed buy-and-hold return if provided, otherwise compute
+        if self.buy_hold_return is not None:
+            bh_return = self.buy_hold_return
+        else:
+            raise
 
         # Long vs short breakdown
         long_trades = [t for t in trades if t.direction > 0]
@@ -565,25 +568,16 @@ class RobustnessValidator:
         long_return = sum(t.trade_return for t in long_trades)
         short_return = sum(t.trade_return for t in short_trades)
 
-        # Signal accuracy — need to check against actuals
-        # This requires the TradeAnalyzer, but we can approximate from the result
-        # For now, use a placeholder based on trade outcomes
+        # Get actual signal accuracy from TradeAnalysis (uses ground truth earnings data)
         win_rate = self.result.trade_log.win_rate
 
-        # Approximate signal accuracy as direction-right trades / total
-        # (this is a simplification — true signal accuracy requires ground truth)
-        direction_right = sum(
-            1
-            for t in trades
-            if (t.direction > 0 and t.trade_return > 0)
-            or (t.direction < 0 and t.trade_return > 0)
-        )
-        direction_accuracy = direction_right / len(trades) if trades else 0.0
-
-        # Approximate signal accuracy (would need actual earnings data for true value)
-        # For now, assume signal accuracy is worse than direction accuracy
-        # since the flip compensates for signal errors
-        signal_accuracy = direction_accuracy * 0.5  # Conservative estimate
+        # Use provided analysis or create new one
+        if self.trade_analysis is not None:
+            # Use pre-computed analysis (avoids re-analyzing)
+            signal_accuracy = self.trade_analysis.signal_accuracy
+            direction_accuracy = self.trade_analysis.direction_accuracy
+        else:
+            raise
 
         return AlphaAttributionResult(
             total_return=total_return,
@@ -616,13 +610,13 @@ class RobustnessValidator:
                 return None
 
             # Compute metrics from the daily DataFrame
-            from abovedata_backtesting.model.metrics import BacktestMetrics
 
             metrics = BacktestMetrics.from_dataframe(daily)
 
             return GridSearchResult(
                 entry_rule=self.result.entry_rule,
                 exit_rule=exit_rule,
+                position_filter=self.result.position_filter,
                 metrics=metrics,
                 trade_log=trade_log,
                 daily_df=daily,

@@ -62,6 +62,25 @@ class EntryContext:
     def has_signal(self) -> bool:
         return self.signal_value is not None
 
+    @classmethod
+    def make_empty(cls) -> EntryContext:
+        return cls(entry_type="none")
+
+    @classmethod
+    def from_row(cls, row: dict) -> EntryContext | None:
+        """Build EntryContext from a daily DataFrame row with entry_* columns."""
+        if row.get("entry_type") is None:
+            return None
+        kwargs = {
+            k.removeprefix("entry_"): v  # type: ignore
+            for k, v in row.items()
+            if (k.startswith("entry_") and k not in ["entry_type"])
+        }
+        kwargs["entry_type"] = row.get('entry_type')
+
+        # Strip "entry_" prefix to match EntryContext field names
+        return cls(**kwargs)
+
 
 # Column name constants for daily DataFrame propagation
 # Entry rules write these columns; TradeLog.from_daily() reads them.
@@ -84,53 +103,3 @@ ENTRY_CONTEXT_COLUMNS = [
     "entry_momentum_zscore",
     "entry_lookback_days",
 ]
-
-
-def entry_context_from_row(row: dict) -> EntryContext | None:
-    """
-    Build EntryContext from a daily DataFrame row.
-
-    Returns None if no entry context columns are present.
-    """
-    entry_type = row.get("entry_type")
-    if entry_type is None:
-        return None
-
-    return EntryContext(
-        entry_type=str(entry_type),
-        signal_col=row.get("entry_signal_col"),
-        signal_value=_safe_float(row.get("entry_signal_value")),
-        signal_date=row.get("entry_signal_date"),
-        raw_direction=int(row.get("entry_raw_direction", 0)),
-        final_direction=int(row.get("entry_final_direction", 0)),
-        flipped=bool(row.get("entry_flipped", False)),
-        corr_col_used=row.get("entry_corr_col_used"),
-        corr_value_used=_safe_float(row.get("entry_corr_value_used")),
-        prior_quarter_corr=bool(row.get("entry_prior_quarter_corr", False)),
-        confidence_col_used=row.get("entry_confidence_col_used"),
-        confidence_value_used=_safe_float(row.get("entry_confidence_value_used")),
-        correlation_regime=row.get("entry_correlation_regime"),
-        regime_shift_detected=bool(row.get("entry_regime_shift_detected", False)),
-        regime_shift_skipped=bool(row.get("entry_regime_shift_skipped", False)),
-        momentum_zscore=_safe_float(row.get("entry_momentum_zscore")),
-        lookback_days=_safe_int(row.get("entry_lookback_days")),
-    )
-
-
-def _safe_float(val: object) -> float | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)  # type: ignore[arg-type]
-        return f if f == f else None  # NaN check
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_int(val: object) -> int | None:
-    if val is None:
-        return None
-    try:
-        return int(val)  # type: ignore[arg-type]
-    except (ValueError, TypeError):
-        return None

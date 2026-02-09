@@ -1,0 +1,47 @@
+{
+  "entry": "momentum_lb20_z0.5_e0d",
+  "exit": "signal_change",
+  "entry_params": {
+    "entry_type": "momentum",
+    "lookback_days": 20,
+    "zscore_threshold": 0.5,
+    "zscore_window": 60,
+    "entry_days_before": 0
+  },
+  "exit_params": {
+    "exit_type": "signal_change"
+  },
+  "sharpe": 0.6809242113507861,
+  "total_return": 8.191536537438484,
+  "annualized_return": 0.19789769559012993,
+  "max_drawdown": -0.4186122195999642,
+  "n_trades": 20,
+  "avg_return": 0.1509765208052371,
+  "avg_alpha": 0.1509765208052371,
+  "win_rate": 0.75,
+  "outcome_counts": {
+    "no_signal": 5,
+    "direction_wrong_loss": 4,
+    "direction_right_profit": 11
+  },
+  "signal_accuracy": 0.7333333333333333,
+  "direction_accuracy": 0.75,
+  "flip_accuracy": 0.0,
+  "flip_count": 0,
+  "skill_ratio": 0.7333333333333333,
+  "headwind_ratio": 0.0,
+  "luck_ratio": 0.0,
+  "hhi": 0.15731728148645113,
+  "top1_pct": 0.4149280063447234,
+  "top3_pct": 0.5816672204789537,
+  "top5_pct": 0.7133836807645726,
+  "return_ex_top1": 2.6944068833028623,
+  "return_ex_top3": 1.1896517785561112,
+  "profit_factor": 6.329798291411556,
+  "expectancy": 0.1509765208052371,
+  "max_single_contribution": 1.4879599967670845,
+  "tail_ratio": 5.715504003164126,
+  "buy_hold_total_return": 2.224680076128673,
+  "buy_hold_annualized_return": 0.13481326280981842,
+  "name": "momentum_lb20_z0.5_e0d \u00d7 signal_change"
+}

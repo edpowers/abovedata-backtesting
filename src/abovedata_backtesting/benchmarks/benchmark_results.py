@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Iterator, Literal
 
 import polars as pl
 
@@ -95,4 +95,24 @@ class BenchmarkResults:
             (pl.lit(strategy_sharpe) - pl.col("sharpe_ratio")).alias("sharpe_alpha"),
             (pl.lit(strategy_return) - pl.col("total_return")).alias("return_alpha"),
             (pl.lit(strategy_sharpe) > pl.col("sharpe_ratio")).alias("beats_benchmark"),
+        )
+
+    def get_daily_returns(
+        self,
+        ticker: str,
+        strategy: Literal[
+            "buyhold", "momentum", "random", "shuffled", "always_in"
+        ] = "buyhold",
+    ) -> pl.DataFrame:
+        """
+        Get benchmark daily returns as (date, benchmark_return) DataFrame.
+
+        Looks up buyhold_{ticker} strategy and extracts its daily returns
+        with asset_return renamed to benchmark_return for joining.
+        """
+        bm = self._results[f"{strategy}_{ticker}"]
+        assert isinstance(bm.daily_returns, pl.DataFrame)
+        return bm.daily_returns.select(
+            "date",
+            pl.col("asset_return").alias("benchmark_return"),
         )

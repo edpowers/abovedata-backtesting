@@ -1,10 +1,3 @@
-"""
-Benchmark Processor
-
-Pre-computes benchmark returns and metrics for strategy comparison.
-Results are cached and can be compared against live strategies.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,12 +26,12 @@ class BenchmarkConfig:
     """Configuration for benchmark processing."""
 
     tickers: tuple[str, ...]
-    strategies: tuple[Strategy, ...] | None = None  # None = use defaults
-    signal_col: str | None = None  # For shuffled/always-in strategies
+    strategies: tuple[Strategy, ...] | None = None
+    signal_col: str | None = None
     start_date: date | None = None
     end_date: date | None = None
     benchmark_ticker: str = "SPY"
-    trade_probability: float = 0.3  # For random strategy
+    trade_probability: float = 0.3
     seed: int = 42
 
     @classmethod
@@ -48,13 +41,14 @@ class BenchmarkConfig:
         signal_col: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        benchmark_ticker: str = "SPY",
     ) -> BenchmarkConfig:
-        """Create config for a single ticker with default benchmarks."""
         return cls(
             tickers=(ticker,),
             signal_col=signal_col,
             start_date=start_date,
             end_date=end_date,
+            benchmark_ticker=benchmark_ticker,
         )
 
 
@@ -66,17 +60,15 @@ class BenchmarkConfig:
 @dataclass
 class BenchmarkProcessor:
     """
-    Processes benchmark strategies and caches results for comparison.
+    Processes benchmark strategies and produces BenchmarkResults.
+
+    Run once, then pass results to StrategyProcessor for comparison.
 
     Usage
     -----
-    >>> config = BenchmarkConfig.for_ticker("AAPL", signal_col="signal_zscore")
-    >>> processor = BenchmarkProcessor(config)
-    >>> results = processor.run()
-    >>> print(results.to_dataframe())
-    >>>
-    >>> # Later, compare your strategy
-    >>> comparison = results.compare_strategy(strategy_sharpe=1.5, strategy_return=0.25)
+    >>> config = BenchmarkConfig.for_ticker("DE", signal_col="visible_revenue")
+    >>> benchmarks = BenchmarkProcessor(config).run()
+    >>> processor = StrategyProcessor(ticker="DE", benchmarks=benchmarks, ...)
     """
 
     config: BenchmarkConfig
@@ -89,38 +81,30 @@ class BenchmarkProcessor:
         self._build_and_evaluate_strategies()
         return self._results
 
-    # =========================================================================
-    # Internal: Data Loading
-    # =========================================================================
     def _load_market_data(self) -> None:
-        """Load market data for all required tickers."""
+        """Load market data for all required tickers (including benchmark)."""
+        all_tickers = set(self.config.tickers)
+        all_tickers.add(self.config.benchmark_ticker)
+
         loaders = MarketDataLoaders.for_tickers(
-            tickers=list(self.config.tickers),
+            tickers=list(all_tickers),
             benchmark_ticker=self.config.benchmark_ticker,
             start_date=self.config.start_date,
             end_date=self.config.end_date,
         )
         self._market_data = {t: loaders[t] for t in loaders.keys()}
 
-    # =========================================================================
-    # Internal: Strategy Evaluation
-    # =========================================================================
-
     def _build_and_evaluate_strategies(self) -> None:
-        """Build and evaluate all benchmark strategies."""
         strategies = self._get_strategies()
-
         for strategy in strategies:
             result = self._evaluate_strategy(strategy)
             if result is not None:
                 self._results.add(result)
 
     def _get_strategies(self) -> list[Strategy]:
-        """Get strategies to evaluate (configured or defaults)."""
         if self.config.strategies:
             return list(self.config.strategies)
 
-        # Build default strategies for each ticker
         all_strategies: list[Strategy] = []
         for ticker in self.config.tickers:
             all_strategies.extend(
@@ -134,85 +118,38 @@ class BenchmarkProcessor:
         return all_strategies
 
     def _evaluate_strategy(self, strategy: Strategy) -> BenchmarkResult | None:
-        """Evaluate a single strategy and compute metrics."""
         primary_ticker = strategy.required_tickers[0]
+        if primary_ticker not in self._market_data:
+            return None
+
         market_df = self._market_data[primary_ticker]
-        # Compute daily returns for the asset
-        daily_df = self._compute_daily_returns(market_df, strategy)
+        daily_df = strategy.compute_positions(market_df).with_columns(
+            (pl.col("asset_return") * pl.col("position")).alias("strategy_return"),
+        )
+        daily_df = self._join_benchmark(daily_df)
 
         return BenchmarkResult(
             strategy_name=strategy.name,
             ticker=primary_ticker,
-            metrics=self._compute_metrics(daily_df, primary_ticker),
+            metrics=BacktestMetrics.from_dataframe(
+                daily_df,
+                benchmark_ticker=self.config.benchmark_ticker,
+            ),
             daily_returns=daily_df,
         )
 
-    def _compute_daily_returns(
-        self, market_df: pl.DataFrame, strategy: Strategy
-    ) -> pl.DataFrame:
-        """Compute daily returns with positions based on strategy type."""
-        # Strategy computes its own positions — no isinstance needed
-        return strategy.compute_positions(market_df).with_columns(
-            (pl.col("asset_return") * pl.col("position")).alias("strategy_return"),
-        )
-
-    def _compute_metrics(self, daily_df: pl.DataFrame, ticker: str) -> BacktestMetrics:
-        """Compute full metrics from daily returns."""
+    def _join_benchmark(self, daily_df: pl.DataFrame) -> pl.DataFrame:
+        """Join benchmark returns onto a daily DataFrame."""
         bm_ticker = self.config.benchmark_ticker
-
-        # Join benchmark returns on date (already has asset_return from MarketDataLoaders)
         if bm_ticker in self._market_data:
             bm_df = self._market_data[bm_ticker].select(
                 "date",
                 pl.col("asset_return").alias("benchmark_return"),
             )
-            daily_df = daily_df.join(bm_df, on="date", how="inner")
-        else:
-            daily_df = daily_df.with_columns(
-                pl.col("asset_return").alias("benchmark_return"),
-            )
-
-        return BacktestMetrics.from_dataframe(daily_df, benchmark_ticker=bm_ticker)
-
-
-def buy_and_hold_from_data(
-    market_data: pl.DataFrame,
-    benchmark_data: pl.DataFrame | None,
-    ticker: str,
-    benchmark_ticker: str = "SPY",
-) -> BenchmarkResult | None:
-    """
-    Evaluate buy-and-hold (100% long) using already-loaded market data.
-    Uses the same metrics path as BenchmarkProcessor for consistency.
-    """
-    if market_data.is_empty() or "asset_return" not in market_data.columns:
-        return None
-    daily_df = market_data.with_columns(
-        pl.lit(1.0).alias("position"),
-        (pl.col("asset_return") * pl.lit(1.0)).alias("strategy_return"),
-    )
-    if benchmark_data is not None and not benchmark_data.is_empty():
-        bm = benchmark_data.select(
-            "date",
+            return daily_df.join(bm_df, on="date", how="inner")
+        return daily_df.with_columns(
             pl.col("asset_return").alias("benchmark_return"),
         )
-        daily_df = daily_df.join(bm, on="date", how="inner")
-    else:
-        daily_df = daily_df.with_columns(
-            pl.col("asset_return").alias("benchmark_return"),
-        )
-    metrics = BacktestMetrics.from_dataframe(
-        daily_df.select(
-            "date", "strategy_return", "asset_return", "benchmark_return", "position"
-        ),
-        benchmark_ticker=benchmark_ticker,
-    )
-    return BenchmarkResult(
-        strategy_name=f"buyhold_{ticker}",
-        ticker=ticker,
-        metrics=metrics,
-        daily_returns=daily_df,
-    )
 
 
 __all__ = [
@@ -220,5 +157,4 @@ __all__ = [
     "BenchmarkProcessor",
     "BenchmarkResult",
     "BenchmarkResults",
-    "buy_and_hold_from_data",
 ]

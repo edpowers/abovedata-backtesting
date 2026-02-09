@@ -18,10 +18,11 @@ class StrategyType(Enum):
     """Classification of strategy types."""
 
     DIRECTIONAL = "directional"  # Long or short single asset
-    LONG_SHORT_EQUITY = "long_short"  # Long asset, short hedge
-    PAIRS = "pairs"  # Pairs trading
-    STATISTICAL_ARB = "stat_arb"  # Multi-leg statistical arbitrage
-    CROSS_TICKER = "cross_ticker"  # Signal from one ticker, trade another
+    # Not yet implemented
+    # LONG_SHORT_EQUITY = "long_short"  # Long asset, short hedge
+    # PAIRS = "pairs"  # Pairs trading
+    # STATISTICAL_ARB = "stat_arb"  # Multi-leg statistical arbitrage
+    # CROSS_TICKER = "cross_ticker"  # Signal from one ticker, trade another
 
 
 @dataclass
@@ -213,101 +214,3 @@ class Strategy(ABC):
             - signal_strength: float
             - confidence: float (0.0 to 1.0)
         """
-
-    def get_signal_value(
-        self,
-        signals: dict[str, pl.DataFrame],
-        ticker: str,
-        signal_col: str,
-        as_of_date: date,
-        date_col: str = "earnings_date",
-    ) -> float | None:
-        """
-        Helper to extract a signal value for a ticker at a date.
-
-        Parameters
-        ----------
-        signals : dict[str, pl.DataFrame]
-            Signal data keyed by ticker
-        ticker : str
-            Ticker to get signal for
-        signal_col : str
-            Column name containing the signal
-        as_of_date : date
-            Date to look up
-        date_col : str
-            Date column name in the signal DataFrame
-
-        Returns
-        -------
-        float | None
-            Signal value, or None if not found
-        """
-        if ticker not in signals:
-            return None
-
-        df = signals[ticker]
-        if signal_col not in df.columns:
-            return None
-
-        # Find the signal at or before as_of_date
-        filtered = df.filter(pl.col(date_col).cast(pl.Date) <= as_of_date).sort(
-            date_col, descending=True
-        )
-
-        if len(filtered) == 0:
-            return None
-
-        val = filtered[signal_col][0]
-        return float(val) if val is not None else None
-
-    def get_price_return(
-        self,
-        market_data: dict[str, pl.DataFrame],
-        ticker: str,
-        as_of_date: date,
-        lookback_days: int = 20,
-        date_col: str = "date",
-        price_col: str = "close",
-    ) -> float | None:
-        """
-        Helper to calculate price return over a lookback period.
-
-        Parameters
-        ----------
-        market_data : dict[str, pl.DataFrame]
-            Market data keyed by ticker
-        ticker : str
-            Ticker to calculate return for
-        as_of_date : date
-            End date for return calculation
-        lookback_days : int
-            Number of trading days to look back
-        date_col : str
-            Date column name
-        price_col : str
-            Price column name
-
-        Returns
-        -------
-        float | None
-            Return over the period, or None if insufficient data
-        """
-        if ticker not in market_data:
-            return None
-
-        df = market_data[ticker]
-        filtered = df.filter(pl.col(date_col).cast(pl.Date) <= as_of_date).sort(
-            date_col, descending=True
-        )
-
-        if len(filtered) < lookback_days:
-            return None
-
-        current_price = filtered[price_col][0]
-        past_price = filtered[price_col][lookback_days - 1]
-
-        if past_price is None or past_price == 0:
-            return None
-
-        return float((current_price / past_price) - 1)

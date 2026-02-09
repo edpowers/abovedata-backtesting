@@ -29,22 +29,26 @@ from abovedata_backtesting.exits.exit_strategies import (
     StopLossTakeProfitExit,
     TrailingStopExit,
 )
+from abovedata_backtesting.processors.benchmark_processor import (
+    BenchmarkConfig,
+    BenchmarkProcessor,
+)
 from abovedata_backtesting.processors.strategy_processor import (
     GridSearchResult,
+    GridSearchResults,
     StrategyProcessor,
 )
 from abovedata_backtesting.trades.analysis_utils import (
     analyze_best_strategies,
-    compare_corr_aware_variants,
     compare_entry_types,
 )
 from abovedata_backtesting.trades.trade_save_results import save_results
 
 
 def run_grid_search(
-    ticker: str = "DE",
+    ticker: str,
     signal_method: str = "stl_p4_s7_robustTrue",
-    start_date: date | None = date(2015, 1, 1),
+    start_date: date | None = date(2018, 1, 1),
     end_date: date | None = None,
     debug: bool = True,
 ) -> tuple[pl.DataFrame, list[GridSearchResult], StrategyProcessor]:
@@ -65,23 +69,29 @@ def run_grid_search(
     if not visible_col:
         raise ValueError("need a valid visible col")
 
+    bm_config = BenchmarkConfig.for_ticker(ticker, signal_col=visible_col)
+    benchmarks = BenchmarkProcessor(bm_config).run()
+
     processor = StrategyProcessor(
         ticker=ticker,
+        benchmark_ticker=ticker,  # Will default to buy and hold
         signals=signals,
         visible_col=visible_col,
         start_date=start_date,
         end_date=end_date,
         debug=debug,
+        max_entries_per_signal=[3],
+        benchmarks=benchmarks,
     )
 
     # =========================================================================
     # Define base entry rules
     # =========================================================================
     # THESE ARE TRADING DAYS, NOT CALENDAR DAYS.
-    entry_days_before = [1, 3, 5, 10, 15, 20]
+    entry_days_before = [0, 1, 5, 15, 20, 30]
 
     base_momentum = MomentumEntry.grid(
-        lookback_days=[10, 20, 40],
+        lookback_days=[10, 20],
         zscore_threshold=[0.5, 1.0, 1.5],
         entry_days_before=entry_days_before,
     )
@@ -96,7 +106,7 @@ def run_grid_search(
 
     base_confirm = SignalMomentumEntry.grid(
         signal_col=[f"{visible_col}_resid"],
-        signal_threshold=[0.3, 0.5],
+        signal_threshold=[0.0, 0.3, 0.5],
         lookback_days=[10, 20],
         momentum_zscore_threshold=[0.3, 0.5],
         entry_days_before=entry_days_before,
@@ -106,7 +116,7 @@ def run_grid_search(
         signal_col=[f"{visible_col}_resid"],
         lookback_days=[5, 10, 20, 30],
         divergence_zscore=[0.5, 1.0],
-        fundamental_threshold=[0.5, 1.0],
+        fundamental_threshold=[0.0, 0.5, 1.0],
         require_strong_divergence=[False, True],
         entry_days_before=entry_days_before,
     )
@@ -117,8 +127,9 @@ def run_grid_search(
 
     corr_aware = CorrelationAwareEntry.grid(
         signal_col=[f"{visible_col}_resid"],
-        corr_col=["contemp", "leading", "contemp_ma", "leading_ma"],
+        corr_col=["contemp", "leading"],
         min_signal_abs=[0.0, 0.1],
+        min_confidence=[0.0, 0.3, 0.4],
         skip_regime_shifts=[True, False],
         scale_by_confidence=[False, True],
         confidence_col=["contemp", "leading"],
@@ -134,12 +145,14 @@ def run_grid_search(
     processor.add_entries(base_momentum)
 
     # Correlation-aware (fundamental signal + correlation regime for direction)
-    processor.add_entries(corr_aware)
 
     # Ungated signal-based entries for comparison
     processor.add_entries(base_signal)
     processor.add_entries(base_confirm)
     processor.add_entries(base_divergence)
+
+    processor.add_entries(corr_aware)
+    processor.add_position_filters(["long_short", "long_only"])
 
     # =========================================================================
     # Define exit rules
@@ -163,10 +176,8 @@ def run_grid_search(
     # =========================================================================
     # Run grid search
     # =========================================================================
-
     summary_df, results = processor.run(
         optimize_by="sharpe_ratio",
-        exclude_suspicious=False,
     )
 
     return summary_df, results, processor
@@ -188,25 +199,12 @@ def main(ticker: str = "DE") -> None:
 
     # Top 10 by Sharpe
     print("\n📊 Top 10 Strategies by Sharpe Ratio:\n")
-    top_cols = [
-        "entry_name",
-        "exit_name",
-        "sharpe_ratio",
-        "annualized_return",
-        "trade_n_trades",
-        "trade_win_rate",
-        "trade_total_return",
-        "max_drawdown",
-        "is_suspicious",
-    ]
-    display(
-        summary_df.select([c for c in top_cols if c in summary_df.columns]).head(10)
-    )
+    display(summary_df.head(10))
 
     # Top 10 by total return
     print("\n📊 Top 10 Strategies by Total Return:\n")
     by_return = summary_df.sort("trade_total_return", descending=True)
-    display(by_return.select([c for c in top_cols if c in by_return.columns]).head(10))
+    display(by_return.head(10))
 
     # Entry type comparison
     print("\n📊 Entry Type Performance:")
@@ -214,31 +212,23 @@ def main(ticker: str = "DE") -> None:
 
     # Corr-aware variant comparison
     print("\n📊 Correlation-Aware Variant Performance:")
-    display(compare_corr_aware_variants(summary_df))
-
-    # Exit type comparison
-    print("\n📊 Exit Type Performance:")
-    exit_perf = (
-        summary_df.group_by("exit_exit_type")
-        .agg(
-            pl.len().alias("count"),
-            pl.col("sharpe_ratio").mean().alias("avg_sharpe"),
-            pl.col("sharpe_ratio").max().alias("max_sharpe"),
+    display(
+        compare_entry_types(
+            summary_df.filter(pl.col("entry_entry_type") == "correlation_aware")
         )
-        .sort("avg_sharpe", descending=True)
     )
-    display(exit_perf)
-
     # Analyze top strategies
     print("\n" + "=" * 60)
     print("DETAILED TRADE ANALYSIS")
     print("=" * 60)
-    analyze_best_strategies(results, processor, summary_df, top_n=5)
+    analyze_best_strategies(GridSearchResults(results), processor, summary_df, top_n=5)
 
     # Direct comparison: best momentum vs best corr_aware
     print("\n" + "=" * 60)
     print("HEAD-TO-HEAD: BEST MOMENTUM vs BEST CORRELATION-AWARE")
     print("=" * 60)
+
+    # best_momentum =
 
     best_momentum = next(
         (
@@ -280,6 +270,12 @@ def main(ticker: str = "DE") -> None:
 
 
 if __name__ == "__main__":
+    # from pyinstrument import Profiler
+
+    # profiler = Profiler(interval=0.01)
+    # profiler.reset()
+    # profiler.start()
+
     parser = argparse.ArgumentParser(
         description="Run correlation-aware strategy grid search"
     )
@@ -288,3 +284,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(ticker=args.ticker)
+
+    # profiler.stop()
+    # profiler.open_in_browser()

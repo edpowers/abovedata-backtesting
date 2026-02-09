@@ -102,9 +102,7 @@ class STLSignalProcessor:
                 processed_frames.append(sub_processor.process())
             except pl.exceptions.InvalidOperationError:
                 console.print_exception()
-
-        full_df = pl.concat(processed_frames)
-        return full_df
+        return pl.concat(processed_frames)
 
     def process(self) -> pl.DataFrame:
         """Executes the full transformation pipeline with noise filtering."""

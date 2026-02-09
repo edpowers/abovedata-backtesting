@@ -1,14 +1,17 @@
 """
-Trade log: round-trip trades built from daily position data.
+Trade log: builds round-trip trades from daily position data.
 
-Trade now carries an optional EntryContext that records the entry
-decision state (which correlation was used, whether a flip occurred, etc.).
+Vectorized implementation:
+- Trade boundaries detected via numpy array operations (no row iteration)
+- EntryContext read only at entry points via column-oriented reader
+- Holding days computed by index difference (O(1) per trade)
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -17,7 +20,6 @@ from numpy.typing import NDArray
 from abovedata_backtesting.entries.entry_context import (
     ENTRY_CONTEXT_COLUMNS,
     EntryContext,
-    entry_context_from_row,
 )
 
 
@@ -27,16 +29,37 @@ class Trade:
 
     entry_date: dt.date
     exit_date: dt.date
-    direction: float  # 1.0 or -1.0
+    direction: float  # +1.0 (long) or -1.0 (short)
     entry_price: float
     exit_price: float
-    holding_days: int  # trading days
+    holding_days: int
     trade_return: float  # (exit/entry - 1) * direction
-    signal_strength: float
-    confidence: float
-
-    # Entry decision context — populated when entry rules write context columns
+    signal_strength: float = 0.0
+    confidence: float = 0.0
     entry_context: EntryContext | None = None
+
+
+class _ContextReader:
+    """
+    Column-oriented context reader for O(1) row access without iter_rows.
+
+    Extracts each context column as a Python list once at init time,
+    then builds EntryContext from column arrays at any index.
+    """
+
+    __slots__ = ("_columns", "_col_names")
+
+    def __init__(self, daily: pl.DataFrame, col_names: list[str]) -> None:
+        self._col_names = col_names
+        self._columns: dict[str, list[Any]] = {
+            col: daily[col].to_list() for col in col_names
+        }
+
+    def read(self, idx: int) -> EntryContext | None:
+        """Build EntryContext at row index from pre-extracted columns."""
+        return EntryContext.from_row(
+            {col: self._columns[col][idx] for col in self._col_names}
+        )
 
 
 @dataclass
@@ -57,122 +80,105 @@ class TradeLog:
         """
         Build trade log from daily DataFrame with positions.
 
+        Vectorized implementation:
+        1. Detect trade boundaries using numpy array ops (no row iteration)
+        2. Match entry→exit pairs via sorted index scan
+        3. Build Trade objects with O(1) holding day calc
+        4. Read EntryContext only at entry rows via column-oriented reader
+
         Required columns: date, close, position.
         Optional columns: signal_strength, confidence, entry_* context columns.
         """
+        if daily.height == 0 or "position" not in daily.columns:
+            return cls(trades=[])
+
+        # Extract arrays once (numpy for numeric, list for dates)
+        positions = daily["position"].to_numpy()
         dates = daily["date"].to_list()
-        closes = daily["close"].to_list()
-        positions = daily["position"].to_list()
+        closes = daily["close"].to_numpy()
+
         strengths = (
-            daily["signal_strength"].to_list()
+            daily["signal_strength"].to_numpy()
             if "signal_strength" in daily.columns
-            else [0.0] * len(dates)
+            else np.zeros(len(dates))
         )
-        confidences = (
-            daily["confidence"].to_list()
+        confs = (
+            daily["confidence"].to_numpy()
             if "confidence" in daily.columns
-            else [0.0] * len(dates)
+            else np.zeros(len(dates))
         )
 
-        # Check if entry context columns are available
+        # Vectorized boundary detection
+        prev_positions = np.empty_like(positions)
+        prev_positions[0] = 0.0
+        prev_positions[1:] = positions[:-1]
+
+        active = np.abs(positions) > 0.01
+        prev_active = np.abs(prev_positions) > 0.01
+        direction = np.sign(positions)
+        prev_direction = np.sign(prev_positions)
+        direction_changed = direction != prev_direction
+
+        # Entry: was inactive → active, or active but direction reversed
+        entries_mask = active & (~prev_active | (prev_active & direction_changed))
+        # Exit: was active → inactive, or active but direction reversed
+        exits_mask = prev_active & (~active | (active & direction_changed))
+
+        entry_indices = np.flatnonzero(entries_mask)
+        exit_indices = np.flatnonzero(exits_mask)
+
+        if len(entry_indices) == 0:
+            return cls(trades=[])
+
+        # Context reader: column-oriented, reads only at entry points
         has_context = any(col in daily.columns for col in ENTRY_CONTEXT_COLUMNS)
-
-        # Pre-extract context rows if available (avoid repeated dict building)
-        context_rows: list[dict | None] = []
+        ctx_reader: _ContextReader | None = None
         if has_context:
-            available_ctx_cols = [
-                c for c in ENTRY_CONTEXT_COLUMNS if c in daily.columns
-            ]
-            ctx_df = daily.select(available_ctx_cols)
-            for row in ctx_df.iter_rows(named=True):
-                context_rows.append(row)
-        else:
-            context_rows = [None] * len(dates)
+            available_cols = [c for c in ENTRY_CONTEXT_COLUMNS if c in daily.columns]
+            ctx_reader = _ContextReader(daily, available_cols)
 
+        # Match entries to exits and build trades
+        n_rows = len(dates)
         trades: list[Trade] = []
-        in_trade = False
-        entry_date: dt.date | None = None
-        entry_price: float = 0.0
-        direction: float = 0.0
-        entry_strength: float = 0.0
-        entry_confidence: float = 0.0
-        entry_ctx: EntryContext | None = None
+        exit_ptr = 0
 
-        for i, (d, close, pos, strength, conf) in enumerate(
-            zip(dates, closes, positions, strengths, confidences, strict=True)
-        ):
-            pos_active = abs(pos) > 0.01
+        for entry_idx in entry_indices:
+            entry_idx = int(entry_idx)
 
-            if pos_active and not in_trade:
-                # New trade entry
-                in_trade = True
-                entry_date = d
-                entry_price = close
-                direction = 1.0 if pos > 0 else -1.0
-                entry_strength = strength if strength is not None else 0.0
-                entry_confidence = conf if conf is not None else 0.0
-                entry_ctx = (
-                    entry_context_from_row(context_rows[i])
-                    if context_rows[i] is not None
-                    else None
-                )
+            # Advance exit pointer past this entry
+            while exit_ptr < len(exit_indices) and exit_indices[exit_ptr] <= entry_idx:
+                exit_ptr += 1
 
-            elif in_trade and (
-                not pos_active or (pos_active and _sign(pos) != direction)
-            ):
-                # Trade exit: position went flat or reversed direction
-                assert entry_date is not None
-                trade_return = (close / entry_price - 1) * direction
-                holding = _trading_days_between(dates, entry_date, d)
+            if exit_ptr < len(exit_indices):
+                exit_idx = int(exit_indices[exit_ptr])
+            else:
+                # No exit found — close at end of data
+                exit_idx = n_rows - 1
 
-                trades.append(
-                    Trade(
-                        entry_date=entry_date,
-                        exit_date=d,
-                        direction=direction,
-                        entry_price=entry_price,
-                        exit_price=close,
-                        holding_days=holding,
-                        trade_return=trade_return,
-                        signal_strength=entry_strength,
-                        confidence=entry_confidence,
-                        entry_context=entry_ctx,
-                    )
-                )
+            entry_price = float(closes[entry_idx])
+            exit_price = float(closes[exit_idx])
+            trade_dir = float(direction[entry_idx])
+            holding = max(exit_idx - entry_idx, 1)
+            trade_return = (exit_price / entry_price - 1) * trade_dir
 
-                # If direction reversed, immediately start new trade
-                if pos_active and _sign(pos) != direction:
-                    entry_date = d
-                    entry_price = close
-                    direction = 1.0 if pos > 0 else -1.0
-                    entry_strength = strength if strength is not None else 0.0
-                    entry_confidence = conf if conf is not None else 0.0
-                    entry_ctx = (
-                        entry_context_from_row(context_rows[i])
-                        if context_rows[i] is not None
-                        else None
-                    )
-                else:
-                    in_trade = False
-                    entry_date = None
-                    entry_ctx = None
+            # NaN-safe strength/confidence
+            s = float(strengths[entry_idx])
+            c = float(confs[entry_idx])
 
-        # Close any open trade at end of period
-        if in_trade and entry_date is not None and len(dates) > 0:
-            trade_return = (closes[-1] / entry_price - 1) * direction
-            holding = _trading_days_between(dates, entry_date, dates[-1])
             trades.append(
                 Trade(
-                    entry_date=entry_date,
-                    exit_date=dates[-1],
-                    direction=direction,
+                    entry_date=dates[entry_idx],
+                    exit_date=dates[exit_idx],
+                    direction=trade_dir,
                     entry_price=entry_price,
-                    exit_price=closes[-1],
+                    exit_price=exit_price,
                     holding_days=holding,
                     trade_return=trade_return,
-                    signal_strength=entry_strength,
-                    confidence=entry_confidence,
-                    entry_context=entry_ctx,
+                    signal_strength=s if s == s else 0.0,
+                    confidence=c if c == c else 0.0,
+                    entry_context=(
+                        ctx_reader.read(entry_idx) if ctx_reader is not None else None
+                    ),
                 )
             )
 
@@ -197,7 +203,7 @@ class TradeLog:
 
         rows = []
         for t in self.trades:
-            row: dict = {
+            row: dict[str, Any] = {
                 "entry_date": t.entry_date,
                 "exit_date": t.exit_date,
                 "direction": t.direction,
@@ -294,21 +300,3 @@ class TradeLog:
             "profit_factor": self.profit_factor,
             "max_consecutive_losses": self.max_consecutive_losses,
         }
-
-
-def _sign(x: float) -> float:
-    return 1.0 if x > 0 else -1.0 if x < 0 else 0.0
-
-
-def _trading_days_between(dates: list[dt.date], start: dt.date, end: dt.date) -> int:
-    in_range = False
-    count = 0
-    for d in dates:
-        if d == start:
-            in_range = True
-            continue
-        if in_range:
-            count += 1
-            if d >= end:
-                break
-    return max(count, 1)
