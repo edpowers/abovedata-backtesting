@@ -6,12 +6,12 @@ An institutional-grade event study backtesting engine for alternative data, buil
 
 ## What This Is
 
-This framework backtests trading strategies using **UCC (Uniform Commercial Code) filing data** as a leading indicator of corporate revenue trends. UCC filings capture secured lending activity—when companies finance equipment purchases or inventory, lenders file UCCs. These filings become public record and can signal revenue trends before earnings announcements.
+This framework backtests trading strategies using **visible_revenue** and **visible_count** signals as leading indicators of corporate revenue trends. These signals are derived from UCC (Uniform Commercial Code) filings—cleaned and aggregated measures of secured lending activity. When companies finance equipment purchases or inventory, lenders file UCCs. These filings become public record and can signal revenue trends before earnings announcements.
 
-The key insight: the relationship between UCC filings and revenue isn't static. Sometimes more filings → more revenue (positive correlation), sometimes more filings → less revenue (negative correlation). The **correlation-aware** strategies in this framework use this dynamic relationship to determine trade direction:
+The key insight: the relationship between visible signals and revenue isn't static. Sometimes higher signal values → more revenue (positive correlation), sometimes higher values → less revenue (negative correlation). The **correlation-aware** strategies in this framework use this dynamic relationship to determine trade direction:
 
 ```
-trade_direction = sign(UCC_signal) × sign(historical_correlation)
+trade_direction = sign(signal) × sign(historical_correlation)
 ```
 
 ## Quick Start
@@ -23,43 +23,47 @@ uv sync
 # Run the full backtesting suite (benchmark + strategy grid search) for default ticker (DE)
 make run-main
 
-# Run for a specific ticker
-make run-main TICKER=AGCO
-
 # Run only the correlation-aware strategy grid search
 make run-corr TICKER=DE
 ```
 
-Results are saved to `results/ticker=<TICKER>/time=<TIMESTAMP>/`.
-
-## Example Results
-
-See the [DE (Deere & Co) top strategy analysis](results/ticker=DE/time=20260208_145945/top_strategy/) for a complete breakdown of the best-performing strategy, including:
-
-- **641.6% total return** over 84 trades (2018-2026)
-- **0.66 Sharpe ratio** with -24.8% max drawdown
-- **57.1% win rate** with 2.16× profit factor
-- Detailed correlation regime analysis
-- Macro context for each trading year
-- Full trade-by-trade breakdown
+Results are saved to `results/ticker=<TICKER>/time=latest/`.
 
 ## Project Structure
 
 ```
 src/
 ├── abovedata_backtesting/
+│   ├── benchmarks/         # Benchmark models and result handling
+│   │   ├── benchmark_models.py    # Benchmark strategy definitions
+│   │   └── benchmark_results.py   # Benchmark result aggregation
 │   ├── data_loaders/       # Load signal and market data
+│   │   ├── load_market_data.py    # yfinance market data retrieval
+│   │   ├── load_signal_data.py    # visible_revenue/visible_count loading
+│   │   └── utils.py               # Shared loader utilities
 │   ├── entries/            # Entry signal generators
 │   │   ├── correlation_aware_entry.py  # Core correlation-aware logic
+│   │   ├── entry_context.py            # Entry context and state
 │   │   └── entry_signals.py            # Momentum, threshold, divergence
 │   ├── exits/              # Exit strategy implementations
 │   │   └── exit_strategies.py          # SL/TP, trailing stop, signal change
+│   ├── model/              # Data models and metrics
+│   │   ├── metrics.py             # Performance metric calculations
+│   │   └── strategy_models.py     # Strategy configuration models
 │   ├── processors/         # Strategy execution engine
-│   ├── trades/             # Trade analysis and reporting
-│   └── model/              # Data models and metrics
+│   │   ├── benchmark_processor.py # Benchmark strategy execution
+│   │   ├── signal_processor.py    # Signal preprocessing
+│   │   └── strategy_processor.py  # Main strategy execution
+│   └── trades/             # Trade analysis and reporting
+│       ├── analysis_utils.py      # Trade analysis helpers
+│       ├── report_generator.py    # Markdown report generation
+│       ├── robustness_tests.py    # Strategy robustness validation
+│       ├── trade_analyzer.py      # Trade-level analysis
+│       ├── trade_log.py           # Trade logging utilities
+│       └── trade_save_results.py  # Result persistence
 └── notebooks/
-    ├── benchmark_main.py       # Benchmark analysis
-    └── gated_strategy_main.py  # Main strategy grid search
+    ├── benchmark_main.py                   # Benchmark analysis
+    ├── correlation_aware_strategy_main.py  # Main strategy grid search
 ```
 
 ## The Iron Rules
@@ -83,7 +87,7 @@ Never use global quantiles—they leak future volatility.
 - **Constraint:** Never include observation t in the distribution used to score observation t
 
 ### Rule 4: Intra-Quarter Signal Estimation
-When entering before earnings (e.g., 30 trading days early), the full quarter's UCC data isn't available yet.
+When entering before earnings (e.g., 20 trading days early), the full quarter's signal data isn't available yet.
 - **Fix:** Estimate the signal as a fraction of the expected final value based on calendar position within the quarter
 - **Constraint:** `entry_days_before` is measured in **trading days** (not calendar days). Max safe value is ~35-45 trading days (quarter start). Values beyond this would require trading on data that doesn't exist yet.
 - **Example:** At 30 trading days (~6 weeks) before earnings, roughly 50% of the quarter has elapsed, so the signal is scaled accordingly.
@@ -91,13 +95,13 @@ When entering before earnings (e.g., 30 trading days early), the full quarter's 
 ## Strategy Types
 
 ### Correlation-Aware (Primary)
-Uses UCC signal direction × historical correlation to determine trade direction. Works especially well in "strong negative" correlation regimes where the relationship has flipped.
+Uses signal direction × historical correlation to determine trade direction. Works especially well in "strong negative" correlation regimes where the relationship has flipped.
 
 ### Momentum Baseline
 Price-only strategies for comparison. No fundamental input—pure technical momentum with z-score thresholds.
 
 ### Signal-Based
-- **Threshold:** Enter when UCC signal exceeds threshold
+- **Threshold:** Enter when signal exceeds threshold
 - **Confirmation:** Signal + momentum alignment
 - **Divergence:** Signal and price moving in opposite directions
 
@@ -139,14 +143,6 @@ annualized = (1 + 6.416)^(1/7.6) - 1 ≈ 13.7%
 ```
 
 This allows fair comparison between strategies with different holding periods.
-
-## Key Dependencies
-
-- **polars** (≥1.37): Fast DataFrame operations
-- **yfinance** (≥1.0): Market data retrieval
-- **altair** (≥6.0): Visualization
-- **pydantic** (≥2.12): Data validation
-- **statsmodels** (≥0.14): Statistical analysis
 
 ## Output Format
 
