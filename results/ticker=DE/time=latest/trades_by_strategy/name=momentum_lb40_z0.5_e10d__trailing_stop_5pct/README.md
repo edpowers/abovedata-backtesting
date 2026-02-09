@@ -20,7 +20,7 @@ Entry type: **momentum**
 ### Exit Parameters
 
 - **Exit type:** `trailing_stop_5%`
-  - 5% trailing stop from the high-water mark. Lets winners run while cutting losses, but can exit too early in volatile markets
+  - 5% trailing stop from the high-water mark. Aims to let winners run while cutting losses, but can exit prematurely in volatile markets
 
 ## Headline Performance
 
@@ -32,8 +32,8 @@ Entry type: **momentum**
 | **Max Drawdown** | -18.1% |
 | **Total Trades** | 176 |
 | **Win Rate** | 44.9% |
-| **Signal Accuracy** | 49.3% |
-| **Direction Accuracy** | 44.6% |
+| **Signal Accuracy** | 35.2% |
+| **Direction Accuracy** | 44.9% |
 | **Skill Ratio** | 44.6% |
 | **Profit Factor** | 1.35 |
 | **Expectancy** | 0.0062 |
@@ -41,27 +41,27 @@ Entry type: **momentum**
 
 ### vs Buy & Hold (same ticker)
 
-| Metric | Buy & Hold | Strategy | Alpha |
+| Metric | Buy & Hold | Strategy | Difference |
 |---|---|---|---|
 | Total Return | 701.3% | 122.7% | -578.6% |
 | Annualized Return | 20.7% | 33.3% | — |
 
 ## Diversity & Concentration
 
-Diversification: **Good** — moderate concentration, acceptable (HHI ratio: 2.0×)
+Diversification: **Moderately diversified** — some concentration, generally acceptable (HHI ratio: 2.0×)
 
-| Metric | Value | Interpretation |
+| Metric | Value | Notes |
 |---|---|---|
 | HHI | 0.0114 | Ideal for 176 trades: 0.0057 |
-| Top-1 Trade | 8.9% of gross profit | ✅ Low concentration |
-| Top-3 Trades | 18.0% of gross profit | ✅ Low concentration |
-| Return ex-Top-1 | 61.9% | Strategy survives without best trade |
-| Return ex-Top-3 | 14.0% | Strategy survives without top 3 |
+| Top-1 Trade | 8.9% of gross profit | Moderate concentration |
+| Top-3 Trades | 18.0% of gross profit | Moderate concentration |
+| Return ex-Top-1 | 61.9% | Positive without best trade |
+| Return ex-Top-3 | 14.0% | Positive without top 3 |
 | Max Single Trade | 37.5% | Largest individual trade return |
 
 ## Outcome Analysis
 
-**Clean binary outcomes:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. Zero ambiguous outcomes (no direction_right_loss or direction_wrong_profit). This indicates the exit mechanism (SL/TP) is perfectly aligned with direction correctness — the asymmetric payoff is the entire edge.
+**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
 
 | Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
 |---|---|---|---|---|---|
@@ -73,59 +73,55 @@ Diversification: **Good** — moderate concentration, acceptable (HHI ratio: 2.0
 
 Performance by the correlation regime at entry time. Regimes are classified from the contemporaneous and leading correlation between UCC filings and revenue.
 
+**Note on data availability:**
+- `unknown` regime = correlation data unavailable at entry (early quarters)
+- Signal accuracy excludes trades where consensus data is missing (delayed ~1 year)
+- The strategy uses correlation for direction; consensus is only for post-hoc validation
+
 | Correlation Regime | Count | Avg Return | Total Return | Direction Accuracy | Win Rate | Avg Alpha |
 |---|---|---|---|---|---|---|
-| weak_positive | 16 | 3.30% | 52.8% | 62.5% | 62.5% | 3.25% |
-| strong_negative | 30 | 1.75% | 52.5% | 53.3% | 53.3% | 0.84% |
-| weak_negative | 26 | 1.26% | 32.8% | 53.8% | 53.8% | 0.69% |
-| unknown | 45 | 0.23% | 10.3% | 40.0% | 40.0% | -0.33% |
-| regime_shift | 46 | -0.38% | -17.7% | 39.1% | 39.1% | -0.95% |
-| strong_positive | 13 | -1.70% | -22.1% | 23.1% | 23.1% | -1.54% |
+| unknown | 176 | 0.62% | 108.7% | 44.9% | 44.9% | 0.09% |
 
-**Best regime:** `weak_positive` — 16 trades, 52.8% total return, 62.5% win rate.
-**Worst regime:** `strong_positive` — 13 trades, -22.1% total return.
+**Best-performing regime:** `unknown` — 176 trades, 108.7% total return, 44.9% win rate.
 
 ## The Correlation Flip Effect
 
-For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction is correct because the correlation flip compensated.
+For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction ends up profitable because the correlation flip adjusted the position accordingly.
 
 ### Signal × Direction Cross-Tab
 
 | Signal Correct | Trade Direction Correct | Count | Avg Return | Total Return |
 |---|---|---|---|---|
-| ❌ | ❌ | 41 | -3.27% | -134.1% |
-| ❌ | ✅ | 34 | 5.75% | 195.4% |
-| ✅ | ❌ | 41 | -3.02% | -123.7% |
-| ✅ | ✅ | 32 | 4.55% | 145.5% |
+| ❌ | ❌ | 62 | -3.34% | -207.2% |
+| ❌ | ✅ | 41 | 4.74% | 194.4% |
+| ✅ | ❌ | 20 | -2.53% | -50.6% |
+| ✅ | ✅ | 25 | 5.86% | 146.5% |
 
 ### Flip Trades (Signal Wrong → Direction Right)
 
-**47 trades** where the UCC signal missed the earnings surprise but the correlation flip correctly identified the price move.
+**54 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
 
-- Average return: **5.9%**
-- Total return: **276.6%**
+- Average return: **5.1%**
+- Total return: **275.6%**
 - Average alpha: **5.4%**
+
+Note: Whether these flips reflect a durable relationship or in-sample coincidence depends on the stability of the correlation regime across market conditions.
 
 Regime distribution of flip trades:
 
 | Correlation Regime | Count | Avg Return |
 |---|---|---|
-| unknown | 15 | 5.76% |
-| regime_shift | 12 | 4.42% |
-| strong_negative | 11 | 7.09% |
-| weak_negative | 3 | 4.52% |
-| weak_positive | 3 | 11.21% |
-| strong_positive | 3 | 3.95% |
+| unknown | 54 | 5.10% |
 
 ## Signal Quality Analysis
 
-High = strong confidence + strong correlation; Medium = moderate; Low = weak signals.
+High = strong confidence + strong correlation; Medium = moderate; Low = weak signals; no_data = confidence unavailable at entry.
+
+**Note:** Signal accuracy is computed against consensus data (beat/miss), which is delayed ~1 year. Trades with missing consensus are excluded from accuracy calculations but still count toward win rate and returns.
 
 | Signal Quality | Count | Avg Return | Total Return | Direction Accuracy | Win Rate |
 |---|---|---|---|---|---|
-| medium | 89 | 0.75% | 67.1% | 49.4% | 49.4% |
-| low | 70 | 0.89% | 62.4% | 42.9% | 42.9% |
-| high | 17 | -1.23% | -20.9% | 29.4% | 29.4% |
+| no_data | 176 | 0.62% | 108.7% | 44.9% | 44.9% |
 
 ## Long vs Short Performance
 
@@ -206,28 +202,28 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 
 | Entry Date | Exit Date | Direction | Trade Return | Correlation Regime | Trade Direction Correct |
 |---|---|---|---|---|---|
-| 2023-05-02 | 2023-05-19 | -1.0000 | 5.28% | regime_shift | ✅ |
-| 2023-05-22 | 2023-06-02 | -1.0000 | -2.93% | regime_shift | ❌ |
-| 2023-06-05 | 2023-06-07 | -1.0000 | -5.00% | regime_shift | ❌ |
-| 2023-06-08 | 2023-06-13 | -1.0000 | -4.59% | regime_shift | ❌ |
-| 2023-06-14 | 2023-06-22 | -1.0000 | -4.17% | regime_shift | ❌ |
-| 2023-06-23 | 2023-07-12 | -1.0000 | -1.11% | regime_shift | ❌ |
-| 2023-07-13 | 2023-07-18 | -1.0000 | -5.37% | regime_shift | ❌ |
-| 2023-07-19 | 2023-08-04 | -1.0000 | 2.78% | regime_shift | ✅ |
-| 2023-08-04 | 2023-08-29 | 1.0000 | -4.70% | regime_shift | ❌ |
-| 2023-08-30 | 2023-09-08 | 1.0000 | -3.29% | regime_shift | ❌ |
-| 2023-09-11 | 2023-09-21 | 1.0000 | -3.18% | regime_shift | ❌ |
-| 2023-09-22 | 2023-10-20 | 1.0000 | -1.15% | regime_shift | ❌ |
-| 2023-10-23 | 2023-10-27 | 1.0000 | -3.25% | regime_shift | ❌ |
-| 2023-10-30 | 2023-11-07 | 1.0000 | 0.39% | regime_shift | ✅ |
-| 2024-02-01 | 2024-02-13 | 1.0000 | -3.66% | strong_positive | ❌ |
-| 2024-02-14 | 2024-02-15 | 1.0000 | -5.23% | strong_positive | ❌ |
-| 2024-02-16 | 2024-04-15 | 1.0000 | 9.59% | weak_positive | ✅ |
-| 2024-04-16 | 2024-04-25 | 1.0000 | 0.27% | weak_positive | ✅ |
-| 2024-04-26 | 2024-05-16 | 1.0000 | 0.28% | weak_positive | ✅ |
-| 2024-05-17 | 2024-05-24 | 1.0000 | -5.56% | weak_positive | ❌ |
-| 2024-05-28 | 2024-07-01 | 1.0000 | -1.86% | weak_positive | ❌ |
-| 2024-07-02 | 2024-07-09 | 1.0000 | -4.41% | weak_positive | ❌ |
+| 2023-05-02 | 2023-05-19 | -1.0000 | 5.28% | unknown | ✅ |
+| 2023-05-22 | 2023-06-02 | -1.0000 | -2.93% | unknown | ❌ |
+| 2023-06-05 | 2023-06-07 | -1.0000 | -5.00% | unknown | ❌ |
+| 2023-06-08 | 2023-06-13 | -1.0000 | -4.59% | unknown | ❌ |
+| 2023-06-14 | 2023-06-22 | -1.0000 | -4.17% | unknown | ❌ |
+| 2023-06-23 | 2023-07-12 | -1.0000 | -1.11% | unknown | ❌ |
+| 2023-07-13 | 2023-07-18 | -1.0000 | -5.37% | unknown | ❌ |
+| 2023-07-19 | 2023-08-04 | -1.0000 | 2.78% | unknown | ✅ |
+| 2023-08-04 | 2023-08-29 | 1.0000 | -4.70% | unknown | ❌ |
+| 2023-08-30 | 2023-09-08 | 1.0000 | -3.29% | unknown | ❌ |
+| 2023-09-11 | 2023-09-21 | 1.0000 | -3.18% | unknown | ❌ |
+| 2023-09-22 | 2023-10-20 | 1.0000 | -1.15% | unknown | ❌ |
+| 2023-10-23 | 2023-10-27 | 1.0000 | -3.25% | unknown | ❌ |
+| 2023-10-30 | 2023-11-07 | 1.0000 | 0.39% | unknown | ✅ |
+| 2024-02-01 | 2024-02-13 | 1.0000 | -3.66% | unknown | ❌ |
+| 2024-02-14 | 2024-02-15 | 1.0000 | -5.23% | unknown | ❌ |
+| 2024-02-16 | 2024-04-15 | 1.0000 | 9.59% | unknown | ✅ |
+| 2024-04-16 | 2024-04-25 | 1.0000 | 0.27% | unknown | ✅ |
+| 2024-04-26 | 2024-05-16 | 1.0000 | 0.28% | unknown | ✅ |
+| 2024-05-17 | 2024-05-24 | 1.0000 | -5.56% | unknown | ❌ |
+| 2024-05-28 | 2024-07-01 | 1.0000 | -1.86% | unknown | ❌ |
+| 2024-07-02 | 2024-07-09 | 1.0000 | -4.41% | unknown | ❌ |
 
 ## Holding Period Analysis
 
@@ -244,15 +240,23 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 - **Max consecutive wins:** 6
 - **Max consecutive losses:** 6
 
-## Conclusions & Observations
+## Observations & Caveats
 
-**Statistical robustness:** With 176 trades, this sample is large enough for reliable inference.
-**Diversification:** Acceptable. Returns survive removal of top 3 trades (14.0% remaining).
-**Signal vs Direction:** Signal accuracy (49.3%) exceeds direction accuracy (44.6%), suggesting the correlation flip occasionally inverts a correct signal. The flip helps more than it hurts overall.
-**Regime dependence:** `weak_positive` (16 trades, 9% of total) generates 52.8% — a disproportionate share of returns.
+**Sample size:** 176 trades provides a reasonable sample for most metrics, though tail statistics (max drawdown, streaks) remain noisy.
+**Diversification:** Moderate concentration. Returns remain positive excluding top 3 trades (14.0%).
+**Win/loss profile:** Profit factor of 1.35 with 44.9% win rate. Positive in-sample but the margin is thin enough that transaction cost assumptions and execution slippage matter.
+**Signal vs Direction:** Direction accuracy (44.9%) exceeded signal accuracy (35.2%) in this sample, suggesting the correlation flip may have contributed positively. This relationship should be tested across different market regimes.
 
 ### Known Vulnerabilities
 
 - **Worst year:** 2023 (-31.4%, 23 trades). Macro: Fed Tightening Cycle, 2023 Soft Landing Rally
-- **Losing regime:** `regime_shift` — 46 trades, -17.7% total return
-- **Losing regime:** `strong_positive` — 13 trades, -22.1% total return
+
+### ⚠️ Robustness Red Flags
+
+- **VARIABLE_HOLDING:** Holding period varies widely (mean 8d, std 9d). Combined with high win rate, this suggests the strategy holds losing positions longer until they recover — a form of survivorship bias in exits.
+
+### General Caveats
+
+- All metrics are in-sample. Out-of-sample and cross-asset validation is necessary before drawing conclusions about edge durability.
+- Transaction costs are modeled but execution slippage, market impact, and liquidity constraints are not.
+- Correlation regimes are estimated from historical data and may shift unpredictably.

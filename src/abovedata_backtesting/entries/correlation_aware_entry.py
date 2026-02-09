@@ -3,17 +3,7 @@
 Uses correlation context to determine trade direction, and estimates
 the signal value at entry time based on how far into the quarter we are.
 
-Signal estimation logic:
-- quarter_start to quarter_end: filings accumulate
-- quarter_end to earnings_date (~20 days): remaining filings trickle in
-- entry_date maps to a completion fraction based on position in quarter
-- signal_at_entry = final_signal * completion_fraction
-
-If a daily transaction DataFrame is provided, uses actual cumulative
-values instead of linear interpolation.
-
-Correlation context (contemp_corr, leading_corr, confidence) comes from
-the most recently COMPLETED quarter — no look-ahead.
+Now records full decision context via EntryContext for downstream analysis.
 """
 
 from __future__ import annotations
@@ -25,6 +15,7 @@ from typing import Any, Self
 
 import polars as pl
 
+from abovedata_backtesting.entries.entry_context import EntryContext
 from abovedata_backtesting.entries.entry_signals import (
     EntryRule,
     _apply_entry_positions,
@@ -65,42 +56,12 @@ def estimate_signal_at_entry(
     final_pct_complete: float | None = None,
     daily_cumulative: dict[dt.date, float] | None = None,
 ) -> tuple[float, float]:
-    """
-    Estimate the signal value at entry_date based on quarter progress.
-
-    Parameters
-    ----------
-    entry_date : dt.date
-        The date we want to enter the trade.
-    quarter_start : dt.date
-        Start of the fiscal quarter.
-    quarter_end : dt.date
-        End of the fiscal quarter.
-    earnings_date : dt.date
-        Date of the earnings call (~20 days after quarter_end).
-    final_signal : float
-        The final signal value (visible_revenue_resid) at earnings_date.
-    final_pct_complete : float | None
-        The pct_count_complete at earnings_date (e.g., 0.90).
-        If None, assumed to be 1.0.
-    daily_cumulative : dict[dt.date, float] | None
-        Optional: actual daily cumulative signal values keyed by date.
-        If provided, uses exact values instead of linear interpolation.
-
-    Returns
-    -------
-    tuple[float, float]
-        (estimated_signal, completion_fraction)
-        completion_fraction is in [0, 1] representing how much of
-        the quarter's data is available at entry_date.
-    """
-    # If we have actual daily data, use it
+    """Estimate signal value at entry_date based on quarter progress."""
     if daily_cumulative is not None:
         if entry_date in daily_cumulative:
             actual = daily_cumulative[entry_date]
             frac = abs(actual / final_signal) if final_signal != 0 else 0.0
             return actual, min(frac, 1.0)
-        # Fall back to nearest prior date
         prior_dates = sorted(d for d in daily_cumulative if d <= entry_date)
         if prior_dates:
             actual = daily_cumulative[prior_dates[-1]]
@@ -108,8 +69,6 @@ def estimate_signal_at_entry(
             return actual, min(frac, 1.0)
         return 0.0, 0.0
 
-    # Linear interpolation based on calendar position
-    # Filing accumulation spans quarter_start → earnings_date
     total_span = (earnings_date - quarter_start).days
     if total_span <= 0:
         return final_signal, 1.0
@@ -117,13 +76,10 @@ def estimate_signal_at_entry(
     days_elapsed = (entry_date - quarter_start).days
 
     if days_elapsed <= 0:
-        # Before quarter started — no signal from this quarter
         return 0.0, 0.0
     elif days_elapsed >= total_span:
-        # At or past earnings_date — full signal
         return final_signal, 1.0
     else:
-        # Linear interpolation
         max_coverage = final_pct_complete if final_pct_complete else 1.0
         raw_fraction = days_elapsed / total_span
         completion = raw_fraction * max_coverage
@@ -138,19 +94,14 @@ def _get_prior_quarter_context(
     conf_col_name: str,
     regime_col_name: str,
 ) -> dict[str, Any]:
-    """
-    Get correlation context from the most recently completed quarter.
-
-    For a trade entered during Q2, we use Q1's correlation context.
-    This is fully causal — no look-ahead.
-    """
+    """Get correlation context from the most recently completed quarter."""
     prior = None
     for row in signal_rows:
         row_ed = row["_parsed_date"]
         if row_ed < earnings_date:
             prior = row
         else:
-            break  # rows are sorted by date
+            break
 
     if prior is None:
         return {"correlation": None, "confidence": None, "regime_shift": None}
@@ -162,6 +113,20 @@ def _get_prior_quarter_context(
     }
 
 
+def _classify_regime(corr: float | None) -> str:
+    """Classify correlation value into a regime string."""
+    if corr is None:
+        return "unknown"
+    if corr > 0.5:
+        return "strong_positive"
+    elif corr > 0:
+        return "weak_positive"
+    elif corr > -0.5:
+        return "weak_negative"
+    else:
+        return "strong_negative"
+
+
 # =============================================================================
 # Entry rule
 # =============================================================================
@@ -170,22 +135,9 @@ def _get_prior_quarter_context(
 @dataclass(frozen=True, slots=True)
 class CorrelationAwareEntry(EntryRule):
     """
-    Enter on every signal date, using correlation context for direction
-    and intra-quarter signal estimation for early entries.
+    Enter on every signal date, using correlation context for direction.
 
-    Signal estimation:
-        At entry_days_before=N, estimates signal as a fraction of the
-        final quarterly value based on calendar position within the quarter.
-        Optional daily_cumulative DataFrame overrides with actual values.
-
-    Direction logic:
-        direction = sign(estimated_signal) * sign(correlation)
-
-    Correlation context:
-        use_prior_quarter_corr=True (default): correlation from the most
-        recently completed quarter. Fully causal for early entries.
-        use_prior_quarter_corr=False: same-row correlation (only safe
-        for entry_days_before=0).
+    Now records full EntryContext for each trade decision.
     """
 
     signal_col: str = "visible_revenue_resid"
@@ -251,26 +203,20 @@ class CorrelationAwareEntry(EntryRule):
             use_prior_quarter_corr or [True],
             date_col or ["earnings_date"],
         ):
-            # Deduplicate: confidence_col irrelevant when not scaling
-            effective_cfc = cfc if sbc else "contemp"
-            # use_prior_quarter_corr irrelevant when entry_days_before=0
+            # When not scaling, confidence_col doesn't affect position sizing,
+            # but it DOES affect signal quality classification and context recording.
+            # Default to matching the correlation column's family.
+            if not sbc:
+                effective_cfc = "leading" if cc.startswith("leading") else "contemp"
+            else:
+                effective_cfc = cfc
             effective_upqc = upqc if edb > 0 else True
             key = (sc, cc, msa, srs, sbc, effective_cfc, edb, effective_upqc, dc)
             if key in seen:
                 continue
             seen.add(key)
             results.append(
-                cls(
-                    sc,
-                    cc,
-                    msa,
-                    srs,
-                    sbc,
-                    effective_cfc,
-                    edb,
-                    effective_upqc,
-                    dc,
-                )
+                cls(sc, cc, msa, srs, sbc, effective_cfc, edb, effective_upqc, dc)
             )
         return results
 
@@ -287,12 +233,10 @@ class CorrelationAwareEntry(EntryRule):
                 pl.lit(0.0).alias("confidence"),
             )
 
-        # Resolve column names
         corr_col_name = _CORR_COL_MAP.get(self.corr_col, self.corr_col)
         conf_col_name = _CONF_COL_MAP.get(self.confidence_col, self.confidence_col)
         regime_col_name = _REGIME_COL_MAP.get(self.corr_col, "contemp_regime_shift")
 
-        # Build daily cumulative lookup if provided
         daily_cum_lookup: dict[dt.date, float] | None = None
         if daily_cumulative is not None and self.signal_col in daily_cumulative.columns:
             daily_cum_lookup = dict(
@@ -302,7 +246,6 @@ class CorrelationAwareEntry(EntryRule):
                 )
             )
 
-        # Parse all signal rows sorted chronologically
         signal_rows: list[dict[str, Any]] = []
         for row in signals.sort(self.date_col).iter_rows(named=True):
             ed = row.get(self.date_col)
@@ -326,13 +269,14 @@ class CorrelationAwareEntry(EntryRule):
         directions: dict[dt.date, float] = {}
         strengths: dict[dt.date, float] = {}
         confidences: dict[dt.date, float] = {}
+        contexts: dict[dt.date, EntryContext] = {}
 
         for entry_date, sig_date in entry_map.items():
             row = sig_date_to_row.get(sig_date)
             if row is None:
                 continue
 
-            # ── Signal estimation at entry_date ─────────────────────
+            # ── Signal estimation ───────────────────────────────────
             final_signal = _safe_float(row.get(self.signal_col))
             if final_signal is None:
                 directions[sig_date] = 0.0
@@ -385,25 +329,47 @@ class CorrelationAwareEntry(EntryRule):
             regime_shift = ctx["regime_shift"]
 
             # ── Entry decision ──────────────────────────────────────
-            if abs(estimated_signal) < self.min_signal_abs:
-                directions[sig_date] = 0.0
-                strengths[sig_date] = estimated_signal
-                confidences[sig_date] = 0.0
-                continue
+            regime_shift_detected = regime_shift is not None and regime_shift != ""
+            regime_shift_skipped = self.skip_regime_shifts and regime_shift_detected
 
-            if self.skip_regime_shifts and regime_shift is not None:
+            if abs(estimated_signal) < self.min_signal_abs or regime_shift_skipped:
                 directions[sig_date] = 0.0
                 strengths[sig_date] = estimated_signal
                 confidences[sig_date] = 0.0
+
+                # Still record context for skipped entries
+                contexts[sig_date] = EntryContext(
+                    entry_type="correlation_aware",
+                    signal_col=self.signal_col,
+                    signal_value=estimated_signal,
+                    signal_date=sig_date,
+                    raw_direction=int(_sign(estimated_signal)),
+                    final_direction=0,
+                    flipped=False,
+                    corr_col_used=self.corr_col,
+                    corr_value_used=corr,
+                    prior_quarter_corr=self.use_prior_quarter_corr
+                    and self.entry_days_before > 0,
+                    confidence_col_used=self.confidence_col,
+                    confidence_value_used=conf,
+                    correlation_regime=_classify_regime(corr)
+                    if not regime_shift_detected
+                    else "regime_shift",
+                    regime_shift_detected=regime_shift_detected,
+                    regime_shift_skipped=regime_shift_skipped,
+                )
                 continue
 
             # Direction: sign(estimated_signal) * sign(correlation)
+            raw_dir = _sign(estimated_signal)
             if corr is not None and abs(corr) > 0.01:
-                direction = _sign(estimated_signal) * _sign(corr)
+                final_dir = raw_dir * _sign(corr)
             else:
-                direction = _sign(estimated_signal)
+                final_dir = raw_dir
 
-            position = direction
+            flipped = (int(raw_dir) != int(final_dir)) and final_dir != 0
+
+            position = final_dir
             if self.scale_by_confidence and conf is not None:
                 position *= conf
 
@@ -411,8 +377,30 @@ class CorrelationAwareEntry(EntryRule):
             strengths[sig_date] = estimated_signal
             confidences[sig_date] = conf if conf is not None else 0.0
 
+            # Record the full decision context
+            contexts[sig_date] = EntryContext(
+                entry_type="correlation_aware",
+                signal_col=self.signal_col,
+                signal_value=estimated_signal,
+                signal_date=sig_date,
+                raw_direction=int(raw_dir),
+                final_direction=int(final_dir),
+                flipped=flipped,
+                corr_col_used=self.corr_col,
+                corr_value_used=corr,
+                prior_quarter_corr=self.use_prior_quarter_corr
+                and self.entry_days_before > 0,
+                confidence_col_used=self.confidence_col,
+                confidence_value_used=conf,
+                correlation_regime=_classify_regime(corr)
+                if not regime_shift_detected
+                else "regime_shift",
+                regime_shift_detected=regime_shift_detected,
+                regime_shift_skipped=False,
+            )
+
         return _apply_entry_positions(
-            market_data, entry_map, directions, strengths, confidences
+            market_data, entry_map, directions, strengths, confidences, contexts
         )
 
 

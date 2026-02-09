@@ -8,7 +8,7 @@
 
 ## Strategy Description
 
-This is a **correlation-aware** entry strategy that uses UCC (Uniform Commercial Code) filing data as a leading indicator of corporate revenue trends. Unlike simple signal-threshold strategies, it determines trade **direction** by combining the signal value with the historical correlation between UCC filings and revenue outcomes:
+This is a **correlation-aware** entry strategy that uses UCC (Uniform Commercial Code) filing data as a leading indicator of corporate revenue trends. It determines trade **direction** by combining the signal value with the historical correlation between UCC filings and revenue outcomes:
 
 > `trade_direction = sign(UCC_signal) × sign(correlation)`
 
@@ -28,7 +28,7 @@ When UCC filings and revenue are positively correlated (more filings → more re
 ### Exit Parameters
 
 - **Exit type:** `trailing_stop_5%`
-  - 5% trailing stop from the high-water mark. Lets winners run while cutting losses, but can exit too early in volatile markets
+  - 5% trailing stop from the high-water mark. Aims to let winners run while cutting losses, but can exit prematurely in volatile markets
 
 ## Headline Performance
 
@@ -49,27 +49,27 @@ When UCC filings and revenue are positively correlated (more filings → more re
 
 ### vs Buy & Hold (same ticker)
 
-| Metric | Buy & Hold | Strategy | Alpha |
+| Metric | Buy & Hold | Strategy | Difference |
 |---|---|---|---|
 | Total Return | -10.7% | 30.3% | 41.0% |
 | Annualized Return | -1.0% | 24.9% | — |
 
 ## Diversity & Concentration
 
-Diversification: **Good** — moderate concentration, acceptable (HHI ratio: 1.5×)
+Diversification: **Moderately diversified** — some concentration, generally acceptable (HHI ratio: 1.5×)
 
-| Metric | Value | Interpretation |
+| Metric | Value | Notes |
 |---|---|---|
 | HHI | 0.0089 | Ideal for 168 trades: 0.0060 |
-| Top-1 Trade | 3.4% of gross profit | ✅ Low concentration |
-| Top-3 Trades | 10.0% of gross profit | ✅ Low concentration |
-| Return ex-Top-1 | 16.2% | Strategy survives without best trade |
-| Return ex-Top-3 | -7.1% | Strategy fails without top 3 |
+| Top-1 Trade | 3.4% of gross profit | Moderate concentration |
+| Top-3 Trades | 10.0% of gross profit | Moderate concentration |
+| Return ex-Top-1 | 16.2% | Positive without best trade |
+| Return ex-Top-3 | -7.1% | Negative without top 3 |
 | Max Single Trade | 12.2% | Largest individual trade return |
 
 ## Outcome Analysis
 
-**Clean binary outcomes:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. Zero ambiguous outcomes (no direction_right_loss or direction_wrong_profit). This indicates the exit mechanism (SL/TP) is perfectly aligned with direction correctness — the asymmetric payoff is the entire edge.
+**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
 
 | Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
 |---|---|---|---|---|---|
@@ -90,12 +90,12 @@ Performance by the correlation regime at entry time. Regimes are classified from
 | weak_negative | 34 | -0.26% | -8.9% | 44.1% | 44.1% | -1.14% |
 | strong_positive | 34 | -1.01% | -34.2% | 29.4% | 29.4% | -1.66% |
 
-**Best regime:** `regime_shift` — 58 trades, 51.4% total return, 51.7% win rate.
-**Worst regime:** `strong_positive` — 34 trades, -34.2% total return.
+**Best-performing regime:** `regime_shift` — 58 trades, 51.4% total return, 51.7% win rate.
+**Worst-performing regime:** `strong_positive` — 34 trades, -34.2% total return.
 
 ## The Correlation Flip Effect
 
-For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction is correct because the correlation flip compensated.
+For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction ends up profitable because the correlation flip adjusted the position accordingly.
 
 ### Signal × Direction Cross-Tab
 
@@ -108,11 +108,13 @@ For correlation-aware strategies, the trade direction includes a correlation-bas
 
 ### Flip Trades (Signal Wrong → Direction Right)
 
-**54 trades** where the UCC signal missed the earnings surprise but the correlation flip correctly identified the price move.
+**54 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
 
 - Average return: **4.6%**
 - Total return: **249.7%**
 - Average alpha: **3.2%**
+
+Note: Whether these flips reflect a durable relationship or in-sample coincidence depends on the stability of the correlation regime across market conditions.
 
 Regime distribution of flip trades:
 
@@ -176,14 +178,14 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 - *Fed Tightening Cycle* (volatile): Aggressive rate hikes from 0% to 5.25-5.50%. Growth-sensitive industrials whipsawed as markets repriced duration risk. DE traded in a wide $280-$450 range with sharp reversals.
 - *2023 Soft Landing Rally* (bullish): Growing confidence in a soft landing. DE benefited from strong ag cycle and precision agriculture demand. Correlation regimes began shifting as rate expectations stabilized.
 
-**2024** (Flat: -0.1%, 19 trades)
+**2024** (Roughly flat: -0.1%, 19 trades)
 - *2024 Election Year Uncertainty* (volatile): Policy uncertainty around tariffs, trade, and fiscal direction created headwinds for export-oriented industrials. DE faced ag cycle downturn concerns.
 
 **2025** (Losing year: -15.7%, 27 trades)
 - *2025 Tariff Escalation* (volatile): New tariff announcements on steel, aluminum, and reciprocal tariffs created fresh uncertainty for industrial supply chains. Regime shifts in correlation structure as market repriced trade exposure.
 - *2025 H2 Recovery* (bullish): Trade deal optimism and rate cut expectations drove industrial recovery. DE recovered on strong order book and precision ag technology demand.
 
-**2026** (Flat: -4.7%, 4 trades)
+**2026** (Roughly flat: -4.7%, 4 trades)
 - No major macro events flagged.
 
 
@@ -227,14 +229,21 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 - **Max consecutive wins:** 4
 - **Max consecutive losses:** 8
 
-## Conclusions & Observations
+## Observations & Caveats
 
-**Statistical robustness:** With 168 trades, this sample is large enough for reliable inference.
-**Diversification:** Acceptable. Returns survive removal of top 3 trades (-7.1% remaining).
-**Signal vs Direction:** Direction accuracy (46.0%) exceeds signal accuracy (31.7%), confirming the correlation flip adds value beyond raw signal prediction.
+**Sample size:** 168 trades provides a reasonable sample for most metrics, though tail statistics (max drawdown, streaks) remain noisy.
+**Diversification:** Moderate concentration. Returns remain positive excluding top 3 trades (-7.1%).
+**Win/loss profile:** Profit factor of 1.15 with 44.6% win rate. Positive in-sample but the margin is thin enough that transaction cost assumptions and execution slippage matter.
+**Signal vs Direction:** Direction accuracy (46.0%) exceeded signal accuracy (31.7%) in this sample, suggesting the correlation flip may have contributed positively. This relationship should be tested across different market regimes.
 
 ### Known Vulnerabilities
 
 - **Worst year:** 2022 (-20.1%, 31 trades). Macro: Fed Tightening Cycle, 2022 Bear Market
 - **Losing regime:** `weak_negative` — 34 trades, -8.9% total return
 - **Losing regime:** `strong_positive` — 34 trades, -34.2% total return
+
+### General Caveats
+
+- All metrics are in-sample. Out-of-sample and cross-asset validation is necessary before drawing conclusions about edge durability.
+- Transaction costs are modeled but execution slippage, market impact, and liquidity constraints are not.
+- Correlation regimes are estimated from historical data and may shift unpredictably.

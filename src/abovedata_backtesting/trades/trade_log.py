@@ -1,8 +1,8 @@
-"""Trade log for round-trip trade tracking.
+"""
+Trade log: round-trip trades built from daily position data.
 
-Converts daily position data into discrete trades with entry/exit dates,
-holding periods, and P&L. This avoids the compounding illusion from
-daily position × return calculations.
+Trade now carries an optional EntryContext that records the entry
+decision state (which correlation was used, whether a flip occurred, etc.).
 """
 
 from __future__ import annotations
@@ -13,6 +13,12 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 from numpy.typing import NDArray
+
+from abovedata_backtesting.entries.entry_context import (
+    ENTRY_CONTEXT_COLUMNS,
+    EntryContext,
+    entry_context_from_row,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +34,9 @@ class Trade:
     trade_return: float  # (exit/entry - 1) * direction
     signal_strength: float
     confidence: float
+
+    # Entry decision context — populated when entry rules write context columns
+    entry_context: EntryContext | None = None
 
 
 @dataclass
@@ -49,10 +58,7 @@ class TradeLog:
         Build trade log from daily DataFrame with positions.
 
         Required columns: date, close, position.
-        Optional columns: signal_strength, confidence.
-
-        A trade starts when position goes from 0 to non-zero,
-        and ends when position returns to 0 or changes direction.
+        Optional columns: signal_strength, confidence, entry_* context columns.
         """
         dates = daily["date"].to_list()
         closes = daily["close"].to_list()
@@ -68,6 +74,21 @@ class TradeLog:
             else [0.0] * len(dates)
         )
 
+        # Check if entry context columns are available
+        has_context = any(col in daily.columns for col in ENTRY_CONTEXT_COLUMNS)
+
+        # Pre-extract context rows if available (avoid repeated dict building)
+        context_rows: list[dict | None] = []
+        if has_context:
+            available_ctx_cols = [
+                c for c in ENTRY_CONTEXT_COLUMNS if c in daily.columns
+            ]
+            ctx_df = daily.select(available_ctx_cols)
+            for row in ctx_df.iter_rows(named=True):
+                context_rows.append(row)
+        else:
+            context_rows = [None] * len(dates)
+
         trades: list[Trade] = []
         in_trade = False
         entry_date: dt.date | None = None
@@ -75,6 +96,7 @@ class TradeLog:
         direction: float = 0.0
         entry_strength: float = 0.0
         entry_confidence: float = 0.0
+        entry_ctx: EntryContext | None = None
 
         for i, (d, close, pos, strength, conf) in enumerate(
             zip(dates, closes, positions, strengths, confidences, strict=True)
@@ -89,6 +111,11 @@ class TradeLog:
                 direction = 1.0 if pos > 0 else -1.0
                 entry_strength = strength if strength is not None else 0.0
                 entry_confidence = conf if conf is not None else 0.0
+                entry_ctx = (
+                    entry_context_from_row(context_rows[i])
+                    if context_rows[i] is not None
+                    else None
+                )
 
             elif in_trade and (
                 not pos_active or (pos_active and _sign(pos) != direction)
@@ -109,6 +136,7 @@ class TradeLog:
                         trade_return=trade_return,
                         signal_strength=entry_strength,
                         confidence=entry_confidence,
+                        entry_context=entry_ctx,
                     )
                 )
 
@@ -119,9 +147,15 @@ class TradeLog:
                     direction = 1.0 if pos > 0 else -1.0
                     entry_strength = strength if strength is not None else 0.0
                     entry_confidence = conf if conf is not None else 0.0
+                    entry_ctx = (
+                        entry_context_from_row(context_rows[i])
+                        if context_rows[i] is not None
+                        else None
+                    )
                 else:
                     in_trade = False
                     entry_date = None
+                    entry_ctx = None
 
         # Close any open trade at end of period
         if in_trade and entry_date is not None and len(dates) > 0:
@@ -138,13 +172,14 @@ class TradeLog:
                     trade_return=trade_return,
                     signal_strength=entry_strength,
                     confidence=entry_confidence,
+                    entry_context=entry_ctx,
                 )
             )
 
         return cls(trades=trades)
 
     def to_dataframe(self) -> pl.DataFrame:
-        """Convert trade log to Polars DataFrame."""
+        """Convert trade log to Polars DataFrame, including context fields."""
         if not self.trades:
             return pl.DataFrame(
                 schema={
@@ -159,22 +194,42 @@ class TradeLog:
                     "confidence": pl.Float64,
                 }
             )
-        return pl.DataFrame(
-            [
-                {
-                    "entry_date": t.entry_date,
-                    "exit_date": t.exit_date,
-                    "direction": t.direction,
-                    "entry_price": t.entry_price,
-                    "exit_price": t.exit_price,
-                    "holding_days": t.holding_days,
-                    "trade_return": t.trade_return,
-                    "signal_strength": t.signal_strength,
-                    "confidence": t.confidence,
-                }
-                for t in self.trades
-            ]
-        )
+
+        rows = []
+        for t in self.trades:
+            row: dict = {
+                "entry_date": t.entry_date,
+                "exit_date": t.exit_date,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "holding_days": t.holding_days,
+                "trade_return": t.trade_return,
+                "signal_strength": t.signal_strength,
+                "confidence": t.confidence,
+            }
+
+            # Flatten entry context into columns
+            ctx = t.entry_context
+            if ctx is not None:
+                row["entry_type"] = ctx.entry_type
+                row["signal_col"] = ctx.signal_col
+                row["signal_value"] = ctx.signal_value
+                row["signal_date"] = ctx.signal_date
+                row["raw_direction"] = ctx.raw_direction
+                row["final_direction"] = ctx.final_direction
+                row["flipped"] = ctx.flipped
+                row["corr_col_used"] = ctx.corr_col_used
+                row["corr_value_used"] = ctx.corr_value_used
+                row["confidence_col_used"] = ctx.confidence_col_used
+                row["confidence_value_used"] = ctx.confidence_value_used
+                row["correlation_regime"] = ctx.correlation_regime
+                row["regime_shift_detected"] = ctx.regime_shift_detected
+                row["momentum_zscore"] = ctx.momentum_zscore
+
+            rows.append(row)
+
+        return pl.DataFrame(rows)
 
     @property
     def n_trades(self) -> int:
@@ -182,14 +237,12 @@ class TradeLog:
 
     @property
     def returns(self) -> NDArray[np.float64]:
-        """Array of per-trade returns."""
         if not self.trades:
             return np.array([], dtype=np.float64)
         return np.array([t.trade_return for t in self.trades], dtype=np.float64)
 
     @property
     def total_return(self) -> float:
-        """Compounded return across all trades."""
         r = self.returns
         return float(np.prod(1 + r) - 1) if len(r) > 0 else 0.0
 
@@ -211,7 +264,6 @@ class TradeLog:
 
     @property
     def profit_factor(self) -> float:
-        """Gross profits / gross losses."""
         r = self.returns
         gains = r[r > 0].sum()
         losses = abs(r[r < 0].sum())
@@ -221,7 +273,6 @@ class TradeLog:
 
     @property
     def max_consecutive_losses(self) -> int:
-        """Longest streak of losing trades."""
         r = self.returns
         max_streak = 0
         current = 0
@@ -234,7 +285,6 @@ class TradeLog:
         return max_streak
 
     def summary(self) -> dict[str, float | int]:
-        """Summary stats as a flat dict (for grid search DataFrame)."""
         return {
             "n_trades": self.n_trades,
             "total_return": self.total_return,
@@ -251,8 +301,6 @@ def _sign(x: float) -> float:
 
 
 def _trading_days_between(dates: list[dt.date], start: dt.date, end: dt.date) -> int:
-    """Count trading days between start and end (inclusive of end)."""
-    # Since dates list is the actual trading calendar, just count rows
     in_range = False
     count = 0
     for d in dates:

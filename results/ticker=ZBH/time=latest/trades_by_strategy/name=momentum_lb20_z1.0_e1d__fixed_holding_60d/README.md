@@ -41,27 +41,27 @@ Entry type: **momentum**
 
 ### vs Buy & Hold (same ticker)
 
-| Metric | Buy & Hold | Strategy | Alpha |
+| Metric | Buy & Hold | Strategy | Difference |
 |---|---|---|---|
 | Total Return | -10.7% | 145.0% | 155.7% |
 | Annualized Return | -1.0% | 8.6% | — |
 
 ## Diversity & Concentration
 
-Diversification: **Good** — moderate concentration, acceptable (HHI ratio: 2.0×)
+Diversification: **Moderately diversified** — some concentration, generally acceptable (HHI ratio: 2.0×)
 
-| Metric | Value | Interpretation |
+| Metric | Value | Notes |
 |---|---|---|
 | HHI | 0.0645 | Ideal for 31 trades: 0.0323 |
-| Top-1 Trade | 16.7% of gross profit | ✅ Low concentration |
-| Top-3 Trades | 39.6% of gross profit | ✅ Low concentration |
-| Return ex-Top-1 | 96.3% | Strategy survives without best trade |
-| Return ex-Top-3 | 43.3% | Strategy survives without top 3 |
+| Top-1 Trade | 16.7% of gross profit | Moderate concentration |
+| Top-3 Trades | 39.6% of gross profit | Moderate concentration |
+| Return ex-Top-1 | 96.3% | Positive without best trade |
+| Return ex-Top-3 | 43.3% | Positive without top 3 |
 | Max Single Trade | 24.8% | Largest individual trade return |
 
 ## Outcome Analysis
 
-**Clean binary outcomes:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. Zero ambiguous outcomes (no direction_right_loss or direction_wrong_profit). This indicates the exit mechanism (SL/TP) is perfectly aligned with direction correctness — the asymmetric payoff is the entire edge.
+**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
 
 | Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
 |---|---|---|---|---|---|
@@ -82,12 +82,12 @@ Performance by the correlation regime at entry time. Regimes are classified from
 | strong_negative | 2 | -2.71% | -5.4% | 0.0% | 0.0% | -5.30% |
 | weak_negative | 2 | -5.71% | -11.4% | 50.0% | 50.0% | -14.14% |
 
-**Best regime:** `unknown` — 11 trades, 64.6% total return, 72.7% win rate.
-**Worst regime:** `weak_negative` — 2 trades, -11.4% total return.
+**Best-performing regime:** `unknown` — 11 trades, 64.6% total return, 72.7% win rate.
+**Worst-performing regime:** `weak_negative` — 2 trades, -11.4% total return.
 
 ## The Correlation Flip Effect
 
-For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction is correct because the correlation flip compensated.
+For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction ends up profitable because the correlation flip adjusted the position accordingly.
 
 ### Signal × Direction Cross-Tab
 
@@ -100,11 +100,13 @@ For correlation-aware strategies, the trade direction includes a correlation-bas
 
 ### Flip Trades (Signal Wrong → Direction Right)
 
-**13 trades** where the UCC signal missed the earnings surprise but the correlation flip correctly identified the price move.
+**13 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
 
 - Average return: **8.1%**
 - Total return: **105.1%**
 - Average alpha: **6.5%**
+
+Note: Whether these flips reflect a durable relationship or in-sample coincidence depends on the stability of the correlation regime across market conditions.
 
 Regime distribution of flip trades:
 
@@ -212,15 +214,21 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 - **Max consecutive wins:** 6
 - **Max consecutive losses:** 3
 
-## Conclusions & Observations
+## Observations & Caveats
 
-**Statistical robustness:** 31 trades provides a reasonable sample, though some metrics may have wide confidence intervals.
-**Diversification:** Acceptable. Returns survive removal of top 3 trades (43.3% remaining).
-**Edge:** Genuine structural edge: 61.3% win rate with 3.13× profit factor — wins are systematically larger than losses.
-**Signal vs Direction:** Direction accuracy (62.1%) exceeds signal accuracy (27.6%), confirming the correlation flip adds value beyond raw signal prediction.
+**Sample size:** 31 trades is a moderate sample. Point estimates may have wide confidence intervals, particularly for Sharpe and drawdown.
+**Diversification:** Moderate concentration. Returns remain positive excluding top 3 trades (43.3%).
+**Win/loss profile:** 61.3% win rate with 3.13× profit factor — in this sample, winning trades tended to be larger than losing trades. Whether this reflects a durable edge or favorable conditions during the test period warrants further investigation (e.g., out-of-sample testing, different tickers).
+**Signal vs Direction:** Direction accuracy (62.1%) exceeded signal accuracy (27.6%) in this sample, suggesting the correlation flip may have contributed positively. This relationship should be tested across different market regimes.
 
 ### Known Vulnerabilities
 
 - **Worst year:** 2021 (-8.7%, 2 trades). Macro: Post-COVID Stimulus Rally
 - **Losing regime:** `strong_negative` — 2 trades, -5.4% total return
 - **Losing regime:** `weak_negative` — 2 trades, -11.4% total return
+
+### General Caveats
+
+- All metrics are in-sample. Out-of-sample and cross-asset validation is necessary before drawing conclusions about edge durability.
+- Transaction costs are modeled but execution slippage, market impact, and liquidity constraints are not.
+- Correlation regimes are estimated from historical data and may shift unpredictably.

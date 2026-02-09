@@ -8,7 +8,7 @@
 
 ## Strategy Description
 
-This is a **correlation-aware** entry strategy that uses UCC (Uniform Commercial Code) filing data as a leading indicator of corporate revenue trends. Unlike simple signal-threshold strategies, it determines trade **direction** by combining the signal value with the historical correlation between UCC filings and revenue outcomes:
+This is a **correlation-aware** entry strategy that uses UCC (Uniform Commercial Code) filing data as a leading indicator of corporate revenue trends. It determines trade **direction** by combining the signal value with the historical correlation between UCC filings and revenue outcomes:
 
 > `trade_direction = sign(UCC_signal) × sign(correlation)`
 
@@ -28,7 +28,7 @@ When UCC filings and revenue are positively correlated (more filings → more re
 ### Exit Parameters
 
 - **Exit type:** `trailing_stop_5%`
-  - 5% trailing stop from the high-water mark. Lets winners run while cutting losses, but can exit too early in volatile markets
+  - 5% trailing stop from the high-water mark. Aims to let winners run while cutting losses, but can exit prematurely in volatile markets
 
 ## Headline Performance
 
@@ -49,27 +49,27 @@ When UCC filings and revenue are positively correlated (more filings → more re
 
 ### vs Buy & Hold (same ticker)
 
-| Metric | Buy & Hold | Strategy | Alpha |
+| Metric | Buy & Hold | Strategy | Difference |
 |---|---|---|---|
 | Total Return | -10.7% | 15.1% | 25.8% |
 | Annualized Return | -1.0% | 24.7% | — |
 
 ## Diversity & Concentration
 
-Diversification: **Good** — moderate concentration, acceptable (HHI ratio: 1.5×)
+Diversification: **Moderately diversified** — some concentration, generally acceptable (HHI ratio: 1.5×)
 
-| Metric | Value | Interpretation |
+| Metric | Value | Notes |
 |---|---|---|
 | HHI | 0.0092 | Ideal for 165 trades: 0.0061 |
-| Top-1 Trade | 3.8% of gross profit | ✅ Low concentration |
-| Top-3 Trades | 10.9% of gross profit | ✅ Low concentration |
-| Return ex-Top-1 | 1.6% | Strategy survives without best trade |
-| Return ex-Top-3 | -19.7% | Strategy fails without top 3 |
+| Top-1 Trade | 3.8% of gross profit | Moderate concentration |
+| Top-3 Trades | 10.9% of gross profit | Moderate concentration |
+| Return ex-Top-1 | 1.6% | Positive without best trade |
+| Return ex-Top-3 | -19.7% | Negative without top 3 |
 | Max Single Trade | 13.2% | Largest individual trade return |
 
 ## Outcome Analysis
 
-**Clean binary outcomes:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. Zero ambiguous outcomes (no direction_right_loss or direction_wrong_profit). This indicates the exit mechanism (SL/TP) is perfectly aligned with direction correctness — the asymmetric payoff is the entire edge.
+**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
 
 | Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
 |---|---|---|---|---|---|
@@ -90,12 +90,12 @@ Performance by the correlation regime at entry time. Regimes are classified from
 | weak_negative | 34 | -0.32% | -10.9% | 44.1% | 44.1% | -1.21% |
 | strong_positive | 33 | -1.03% | -33.9% | 27.3% | 27.3% | -1.71% |
 
-**Best regime:** `regime_shift` — 57 trades, 38.0% total return, 49.1% win rate.
-**Worst regime:** `strong_positive` — 33 trades, -33.9% total return.
+**Best-performing regime:** `regime_shift` — 57 trades, 38.0% total return, 49.1% win rate.
+**Worst-performing regime:** `strong_positive` — 33 trades, -33.9% total return.
 
 ## The Correlation Flip Effect
 
-For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction is correct because the correlation flip compensated.
+For correlation-aware strategies, the trade direction includes a correlation-based flip: `direction = sign(signal) × sign(correlation)`. The signal can be 'wrong' about the earnings surprise while the trade direction ends up profitable because the correlation flip adjusted the position accordingly.
 
 ### Signal × Direction Cross-Tab
 
@@ -108,11 +108,13 @@ For correlation-aware strategies, the trade direction includes a correlation-bas
 
 ### Flip Trades (Signal Wrong → Direction Right)
 
-**52 trades** where the UCC signal missed the earnings surprise but the correlation flip correctly identified the price move.
+**52 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
 
 - Average return: **4.7%**
 - Total return: **242.5%**
 - Average alpha: **3.1%**
+
+Note: Whether these flips reflect a durable relationship or in-sample coincidence depends on the stability of the correlation regime across market conditions.
 
 Regime distribution of flip trades:
 
@@ -274,14 +276,21 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 - **Max consecutive wins:** 4
 - **Max consecutive losses:** 8
 
-## Conclusions & Observations
+## Observations & Caveats
 
-**Statistical robustness:** With 165 trades, this sample is large enough for reliable inference.
-**Diversification:** Acceptable. Returns survive removal of top 3 trades (-19.7% remaining).
-**Signal vs Direction:** Direction accuracy (44.5%) exceeds signal accuracy (31.4%), confirming the correlation flip adds value beyond raw signal prediction.
+**Sample size:** 165 trades provides a reasonable sample for most metrics, though tail statistics (max drawdown, streaks) remain noisy.
+**Diversification:** Moderate concentration. Returns remain positive excluding top 3 trades (-19.7%).
+**Win/loss profile:** Profit factor of 1.11 with 43.6% win rate. Positive in-sample but the margin is thin enough that transaction cost assumptions and execution slippage matter.
+**Signal vs Direction:** Direction accuracy (44.5%) exceeded signal accuracy (31.4%) in this sample, suggesting the correlation flip may have contributed positively. This relationship should be tested across different market regimes.
 
 ### Known Vulnerabilities
 
 - **Worst year:** 2022 (-20.1%, 31 trades). Macro: Fed Tightening Cycle, 2022 Bear Market
 - **Losing regime:** `weak_negative` — 34 trades, -10.9% total return
 - **Losing regime:** `strong_positive` — 33 trades, -33.9% total return
+
+### General Caveats
+
+- All metrics are in-sample. Out-of-sample and cross-asset validation is necessary before drawing conclusions about edge durability.
+- Transaction costs are modeled but execution slippage, market impact, and liquidity constraints are not.
+- Correlation regimes are estimated from historical data and may shift unpredictably.

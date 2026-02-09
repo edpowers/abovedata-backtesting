@@ -1,3 +1,4 @@
+from pprint import pprint
 from typing import Any
 
 import polars as pl
@@ -6,6 +7,10 @@ from IPython.display import display
 from abovedata_backtesting.processors.strategy_processor import (
     GridSearchResult,
     StrategyProcessor,
+)
+from abovedata_backtesting.trades.robustness_tests import (
+    RobustnessReport,
+    RobustnessValidator,
 )
 from abovedata_backtesting.trades.trade_analyzer import (
     TradeAnalyzer,
@@ -75,6 +80,8 @@ def analyze_best_strategies(
             f"Skill Ratio: {summary['skill_ratio']:.1%}"
         )
 
+        pprint(summary)
+
         # Diversity metrics
         print("\n  📊 Diversity & Concentration:")
         print(
@@ -128,6 +135,14 @@ def analyze_best_strategies(
         print(f"\n  All {trades_df.height} Trades:")
         display(trades_df.select(available))
 
+        # Robustness validation for suspicious results
+        if result.trade_log.win_rate > 0.9 or (
+            result.metrics.risk.sharpe_ratio > 0.25 and result.trade_log.win_rate > 0.6
+        ):
+            print("\n  ⚠️  HIGH PERFORMANCE DETECTED — Running robustness checks...")
+            robustness_report = run_robustness_checks(result, processor)
+            print(robustness_report.summary())
+
 
 def compare_entry_types(summary_df: pl.DataFrame) -> pl.DataFrame:
     """Compare performance across entry types."""
@@ -146,6 +161,29 @@ def compare_entry_types(summary_df: pl.DataFrame) -> pl.DataFrame:
         )
         .sort("avg_sharpe", descending=True)
     )
+
+
+def run_robustness_checks(
+    result: GridSearchResult,
+    processor: StrategyProcessor,
+    n_random_trials: int = 100,
+) -> RobustnessReport:
+    """
+    Run comprehensive robustness tests on a single strategy result.
+
+    Automatically triggered for results with:
+    - Win rate > 90%
+    - Sharpe > 2.5
+    - 100% win rate with low signal accuracy
+
+    Returns a RobustnessReport with pass/fail for each test.
+    """
+    validator = RobustnessValidator(
+        processor=processor,
+        result=result,
+        n_random_trials=n_random_trials,
+    )
+    return validator.run_all()
 
 
 def compare_corr_aware_variants(summary_df: pl.DataFrame) -> pl.DataFrame:

@@ -75,10 +75,10 @@ def run_grid_search(
     )
 
     # =========================================================================
-    # Define base entry rules (ungated)
+    # Define base entry rules
     # =========================================================================
     # THESE ARE TRADING DAYS, NOT CALENDAR DAYS.
-    entry_days_before = [0, 1, 3, 5, 10, 15, 20, 25, 30]
+    entry_days_before = [1, 3, 5, 10, 15, 20]
 
     base_momentum = MomentumEntry.grid(
         lookback_days=[10, 20, 40],
@@ -91,6 +91,7 @@ def run_grid_search(
         long_threshold=[0.3, 0.5, 1.0],
         short_threshold=[-0.3, -0.5, -1.0],
         entry_days_before=entry_days_before,
+        confidence_col=["contemp", "leading"],
     )
 
     base_confirm = SignalMomentumEntry.grid(
@@ -103,7 +104,7 @@ def run_grid_search(
 
     base_divergence = DivergenceEntry.grid(
         signal_col=[f"{visible_col}_resid"],
-        lookback_days=[20],
+        lookback_days=[5, 10, 20, 30],
         divergence_zscore=[0.5, 1.0],
         fundamental_threshold=[0.5, 1.0],
         require_strong_divergence=[False, True],
@@ -243,12 +244,16 @@ def main(ticker: str = "DE") -> None:
         (
             r
             for r in results
-            if "momentum" in r.entry_rule.name and "gated" not in r.entry_rule.name
+            if "momentum" in r.entry_rule.name and r.trade_log.total_return > 0
         ),
         None,
     )
     best_corr = next(
-        (r for r in results if "corr_aware" in r.entry_rule.name),
+        (
+            r
+            for r in results
+            if "corr_aware" in r.entry_rule.name and r.trade_log.total_return > 0
+        ),
         None,
     )
 

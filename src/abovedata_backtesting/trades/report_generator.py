@@ -198,20 +198,19 @@ ENTRY_PARAM_DESCRIPTIONS: dict[str, str] = {
 
 EXIT_TYPE_DESCRIPTIONS: dict[str, str] = {
     "sl-5%_tp10%": (
-        "Stop-loss at -5%, take-profit at +10%. Asymmetric exit creates "
-        "a 2:1 reward/risk ratio — when direction is correct, gains are "
-        "2× what losses are when wrong"
+        "Stop-loss at -5%, take-profit at +10%. Asymmetric exit targets "
+        "a 2:1 reward/risk ratio"
     ),
     "sl-10%_tp20%": (
         "Stop-loss at -10%, take-profit at +20%. Wider bands allow more "
         "time for the thesis to play out but increase per-trade risk"
     ),
     "trailing_stop_5%": (
-        "5% trailing stop from the high-water mark. Lets winners run "
-        "while cutting losses, but can exit too early in volatile markets"
+        "5% trailing stop from the high-water mark. Aims to let winners run "
+        "while cutting losses, but can exit prematurely in volatile markets"
     ),
     "trailing_stop_10%": (
-        "10% trailing stop. More room for normal volatility, captures larger trends"
+        "10% trailing stop. More room for normal volatility, targets larger trends"
     ),
     "signal_change": (
         "Exit when the UCC signal reverses direction. Fundamentally-driven "
@@ -561,10 +560,9 @@ class StrategyReport:
                 [
                     "This is a **correlation-aware** entry strategy that uses UCC "
                     "(Uniform Commercial Code) filing data as a leading indicator "
-                    "of corporate revenue trends. Unlike simple signal-threshold "
-                    "strategies, it determines trade **direction** by combining the "
-                    "signal value with the historical correlation between UCC filings "
-                    "and revenue outcomes:",
+                    "of corporate revenue trends. It determines trade **direction** "
+                    "by combining the signal value with the historical correlation "
+                    "between UCC filings and revenue outcomes:",
                     "",
                     "> `trade_direction = sign(UCC_signal) × sign(correlation)`",
                     "",
@@ -622,7 +620,7 @@ class StrategyReport:
                     "",
                     "### vs Buy & Hold (same ticker)",
                     "",
-                    "| Metric | Buy & Hold | Strategy | Alpha |",
+                    "| Metric | Buy & Hold | Strategy | Difference |",
                     "|---|---|---|---|",
                     f"| Total Return | {_fmt_pct(bh_total)} | {_fmt_pct(strat_total)} | {_fmt_pct(strat_total - bh_total)} |",
                     f"| Annualized Return | {_fmt_pct(bh_ann)} | {_fmt_pct(m.get('annualized_return'))} | — |",
@@ -637,11 +635,17 @@ class StrategyReport:
         hhi_ratio = hhi / ideal_hhi if ideal_hhi > 0 else 0
 
         if hhi_ratio < 1.5:
-            assessment = "**Excellent** — nearly perfectly diversified"
+            assessment = (
+                "**Well-diversified** — close to evenly distributed across trades"
+            )
         elif hhi_ratio < 2.5:
-            assessment = "**Good** — moderate concentration, acceptable"
+            assessment = (
+                "**Moderately diversified** — some concentration, generally acceptable"
+            )
         elif hhi_ratio < 4.0:
-            assessment = "**Moderate** — noticeable concentration in top trades"
+            assessment = (
+                "**Somewhat concentrated** — noticeable dependence on top trades"
+            )
         else:
             assessment = "**Concentrated** — returns depend heavily on a few trades"
 
@@ -655,13 +659,13 @@ class StrategyReport:
             "",
             f"Diversification: {assessment} (HHI ratio: {_fmt_f(hhi_ratio, 1)}×)",
             "",
-            "| Metric | Value | Interpretation |",
+            "| Metric | Value | Notes |",
             "|---|---|---|",
             f"| HHI | {_fmt_f(hhi, 4)} | Ideal for {n} trades: {_fmt_f(ideal_hhi, 4)} |",
-            f"| Top-1 Trade | {_fmt_pct(top1)} of gross profit | {'⚠️ High' if top1 > 0.2 else '✅ Low'} concentration |",
-            f"| Top-3 Trades | {_fmt_pct(top3)} of gross profit | {'⚠️ High' if top3 > 0.5 else '✅ Low'} concentration |",
-            f"| Return ex-Top-1 | {_fmt_pct(ex1)} | Strategy {'survives' if ex1 > 0 else 'fails'} without best trade |",
-            f"| Return ex-Top-3 | {_fmt_pct(ex3)} | Strategy {'survives' if ex3 > 0 else 'fails'} without top 3 |",
+            f"| Top-1 Trade | {_fmt_pct(top1)} of gross profit | {'⚠️ Notable' if top1 > 0.2 else 'Moderate'} concentration |",
+            f"| Top-3 Trades | {_fmt_pct(top3)} of gross profit | {'⚠️ Notable' if top3 > 0.5 else 'Moderate'} concentration |",
+            f"| Return ex-Top-1 | {_fmt_pct(ex1)} | {'Positive' if ex1 > 0 else 'Negative'} without best trade |",
+            f"| Return ex-Top-3 | {_fmt_pct(ex3)} | {'Positive' if ex3 > 0 else 'Negative'} without top 3 |",
             f"| Max Single Trade | {_fmt_pct(m.get('max_single_contribution'))} | Largest individual trade return |",
         ]
         return "\n".join(lines)
@@ -677,11 +681,13 @@ class StrategyReport:
         if not has_right_loss and not has_wrong_profit:
             lines.extend(
                 [
-                    "**Clean binary outcomes:** Every trade with ground truth either "
-                    "got direction right and profited, or got direction wrong and lost. "
-                    "Zero ambiguous outcomes (no direction_right_loss or direction_wrong_profit). "
-                    "This indicates the exit mechanism (SL/TP) is perfectly aligned with "
-                    "direction correctness — the asymmetric payoff is the entire edge.",
+                    "**No ambiguous outcomes observed in this sample:** Every trade "
+                    "with ground truth either got direction right and profited, or "
+                    "got direction wrong and lost. No cases of direction_right_loss "
+                    "or direction_wrong_profit appeared. This may suggest the exit "
+                    "mechanism is reasonably aligned with direction correctness, "
+                    "though the absence of edge cases could also reflect limited "
+                    "sample size or favorable market conditions during the test period.",
                     "",
                 ]
             )
@@ -708,6 +714,11 @@ class StrategyReport:
             "classified from the contemporaneous and leading correlation between "
             "UCC filings and revenue.",
             "",
+            "**Note on data availability:**",
+            "- `unknown` regime = correlation data unavailable at entry (early quarters)",
+            "- Signal accuracy excludes trades where consensus data is missing (delayed ~1 year)",
+            "- The strategy uses correlation for direction; consensus is only for post-hoc validation",
+            "",
             _md_table(
                 regimes,
                 {
@@ -726,14 +737,14 @@ class StrategyReport:
             lines.extend(
                 [
                     "",
-                    f"**Best regime:** `{best['correlation_regime']}` — "
+                    f"**Best-performing regime:** `{best['correlation_regime']}` — "
                     f"{best['count']} trades, {_fmt_pct(best['total_return'])} total return, "
                     f"{_fmt_pct(best['win_rate'])} win rate.",
                 ]
             )
             if worst["total_return"] < 0:
                 lines.append(
-                    f"**Worst regime:** `{worst['correlation_regime']}` — "
+                    f"**Worst-performing regime:** `{worst['correlation_regime']}` — "
                     f"{worst['count']} trades, {_fmt_pct(worst['total_return'])} total return."
                 )
         return "\n".join(lines)
@@ -748,7 +759,8 @@ class StrategyReport:
             "For correlation-aware strategies, the trade direction includes a "
             "correlation-based flip: `direction = sign(signal) × sign(correlation)`. "
             "The signal can be 'wrong' about the earnings surprise while the trade "
-            "direction is correct because the correlation flip compensated.",
+            "direction ends up profitable because the correlation flip adjusted "
+            "the position accordingly.",
             "",
         ]
 
@@ -768,11 +780,15 @@ class StrategyReport:
                     "### Flip Trades (Signal Wrong → Direction Right)",
                     "",
                     f"**{flip['count']} trades** where the UCC signal missed the earnings "
-                    "surprise but the correlation flip correctly identified the price move.",
+                    "surprise but the correlation flip resulted in a profitable direction.",
                     "",
                     f"- Average return: **{_fmt_pct(flip['avg_return'])}**",
                     f"- Total return: **{_fmt_pct(flip['total_return'])}**",
                     f"- Average alpha: **{_fmt_pct(flip['avg_alpha'])}**",
+                    "",
+                    "Note: Whether these flips reflect a durable relationship or "
+                    "in-sample coincidence depends on the stability of the correlation "
+                    "regime across market conditions.",
                 ]
             )
             regime_dist = flip.get("regime_distribution")
@@ -794,7 +810,12 @@ class StrategyReport:
             "## Signal Quality Analysis",
             "",
             "High = strong confidence + strong correlation; "
-            "Medium = moderate; Low = weak signals.",
+            "Medium = moderate; Low = weak signals; "
+            "no_data = confidence unavailable at entry.",
+            "",
+            "**Note:** Signal accuracy is computed against consensus data (beat/miss), "
+            "which is delayed ~1 year. Trades with missing consensus are excluded from "
+            "accuracy calculations but still count toward win rate and returns.",
             "",
             _md_table(
                 quality,
@@ -857,7 +878,7 @@ class StrategyReport:
             elif total_ret > 0:
                 tone = "Modestly positive"
             elif total_ret > -0.05:
-                tone = "Flat"
+                tone = "Roughly flat"
             else:
                 tone = "Losing year"
 
@@ -951,7 +972,7 @@ class StrategyReport:
             - **Max consecutive losses:** {streaks['max_loss_streak']}""")
 
     def _conclusions(self, m: dict, df: pl.DataFrame) -> str:
-        lines = ["## Conclusions & Observations", ""]
+        lines = ["## Observations & Caveats", ""]
         n = m.get("n_trades", 0)
         hhi = m.get("hhi", 0)
         total_ret = m.get("total_return", 0)
@@ -964,60 +985,83 @@ class StrategyReport:
         # Statistical robustness
         if n >= 80:
             lines.append(
-                f"**Statistical robustness:** With {n} trades, this sample "
-                "is large enough for reliable inference."
+                f"**Sample size:** {n} trades provides a reasonable sample "
+                "for most metrics, though tail statistics (max drawdown, "
+                "streaks) remain noisy."
             )
         elif n >= 30:
             lines.append(
-                f"**Statistical robustness:** {n} trades provides a reasonable "
-                "sample, though some metrics may have wide confidence intervals."
+                f"**Sample size:** {n} trades is a moderate sample. "
+                "Point estimates may have wide confidence intervals, "
+                "particularly for Sharpe and drawdown."
             )
         else:
             lines.append(
-                f"**Statistical robustness:** ⚠️ Only {n} trades — interpret cautiously."
+                f"**Sample size:** ⚠️ Only {n} trades — all metrics should "
+                "be interpreted with caution. This is likely insufficient for "
+                "reliable inference."
             )
 
         # Diversification
         ideal_hhi = 1 / n if n > 0 else 0
         if hhi < ideal_hhi * 1.5:
             lines.append(
-                f"**Diversification:** Excellent. HHI of {_fmt_f(hhi, 4)} is near "
-                f"the theoretical minimum of {_fmt_f(ideal_hhi, 4)}. No single "
-                "trade dominates returns."
+                f"**Diversification:** Well-distributed. HHI of {_fmt_f(hhi, 4)} is near "
+                f"the theoretical minimum of {_fmt_f(ideal_hhi, 4)} for {n} trades."
             )
         elif hhi < ideal_hhi * 3:
             lines.append(
-                f"**Diversification:** Acceptable. Returns survive removal of top "
-                f"3 trades ({_fmt_pct(ex_top3)} remaining)."
+                f"**Diversification:** Moderate concentration. Returns "
+                f"remain positive excluding top 3 trades ({_fmt_pct(ex_top3)})."
             )
         else:
             lines.append(
                 f"**Diversification:** ⚠️ Concentrated. HHI of {_fmt_f(hhi, 4)} "
-                f"is {_fmt_f(hhi / ideal_hhi, 1)}× the ideal."
+                f"is {_fmt_f(hhi / ideal_hhi, 1)}× the ideal, suggesting "
+                "meaningful dependence on a small number of trades."
             )
 
-        # Edge
+        # Edge assessment
         if profit_factor and profit_factor > 1.5 and win_rate and win_rate > 0.5:
             lines.append(
-                f"**Edge:** Genuine structural edge: "
-                f"{_fmt_pct(win_rate)} win rate with {_fmt_f(profit_factor)}× "
-                "profit factor — wins are systematically larger than losses."
+                f"**Win/loss profile:** {_fmt_pct(win_rate)} win rate with "
+                f"{_fmt_f(profit_factor)}× profit factor — in this sample, "
+                "winning trades tended to be larger than losing trades. "
+                "Whether this reflects a durable edge or favorable conditions "
+                "during the test period warrants further investigation "
+                "(e.g., out-of-sample testing, different tickers)."
+            )
+        elif profit_factor and profit_factor > 1.0:
+            lines.append(
+                f"**Win/loss profile:** Profit factor of {_fmt_f(profit_factor)} "
+                f"with {_fmt_pct(win_rate)} win rate. Positive in-sample but "
+                "the margin is thin enough that transaction cost assumptions "
+                "and execution slippage matter."
             )
 
         # Signal vs direction
         if direction_acc and signal_acc:
-            if direction_acc < signal_acc:
-                lines.append(
-                    f"**Signal vs Direction:** Signal accuracy ({_fmt_pct(signal_acc)}) "
-                    f"exceeds direction accuracy ({_fmt_pct(direction_acc)}), "
-                    "suggesting the correlation flip occasionally inverts a correct "
-                    "signal. The flip helps more than it hurts overall."
-                )
-            elif direction_acc > signal_acc:
+            gap = direction_acc - signal_acc
+            if gap > 0.02:
                 lines.append(
                     f"**Signal vs Direction:** Direction accuracy ({_fmt_pct(direction_acc)}) "
-                    f"exceeds signal accuracy ({_fmt_pct(signal_acc)}), confirming "
-                    "the correlation flip adds value beyond raw signal prediction."
+                    f"exceeded signal accuracy ({_fmt_pct(signal_acc)}) in this sample, "
+                    "suggesting the correlation flip may have contributed positively. "
+                    "This relationship should be tested across different market regimes."
+                )
+            elif gap < -0.02:
+                lines.append(
+                    f"**Signal vs Direction:** Signal accuracy ({_fmt_pct(signal_acc)}) "
+                    f"exceeded direction accuracy ({_fmt_pct(direction_acc)}), "
+                    "suggesting the correlation flip occasionally inverted a correct "
+                    "signal. Net impact on returns depends on the magnitude of "
+                    "flip-induced losses vs. flip-induced gains."
+                )
+            else:
+                lines.append(
+                    f"**Signal vs Direction:** Signal accuracy ({_fmt_pct(signal_acc)}) "
+                    f"and direction accuracy ({_fmt_pct(direction_acc)}) are similar, "
+                    "suggesting the correlation flip had limited net impact in this sample."
                 )
 
         # Regime dependence
@@ -1030,8 +1074,9 @@ class StrategyReport:
             ):
                 lines.append(
                     f"**Regime dependence:** `{best['correlation_regime']}` "
-                    f"({best['count']} trades, {best['count'] / n:.0%} of total) generates "
-                    f"{_fmt_pct(best['total_return'])} — a disproportionate share of returns."
+                    f"({best['count']} trades, {best['count'] / n:.0%} of total) "
+                    f"contributed {_fmt_pct(best['total_return'])} — a disproportionate "
+                    "share. Performance may degrade if this regime becomes less common."
                 )
 
         # Vulnerabilities
@@ -1057,4 +1102,147 @@ class StrategyReport:
                 f"{row['count']} trades, {_fmt_pct(row['total_return'])} total return"
             )
 
+        # Robustness red flags
+        red_flags = self._detect_red_flags(m, df, signal_acc, win_rate, n)
+        if red_flags:
+            lines.extend(["", "### ⚠️ Robustness Red Flags", ""])
+            lines.extend(red_flags)
+
+        # General caveat
+        lines.extend(
+            [
+                "",
+                "### General Caveats",
+                "",
+                "- All metrics are in-sample. Out-of-sample and cross-asset "
+                "validation is necessary before drawing conclusions about edge durability.",
+                "- Transaction costs are modeled but execution slippage, market impact, "
+                "and liquidity constraints are not.",
+                "- Correlation regimes are estimated from historical data and may shift "
+                "unpredictably.",
+            ]
+        )
+
         return "\n".join(lines)
+
+    def _detect_red_flags(
+        self,
+        m: dict,
+        df: pl.DataFrame,
+        signal_acc: float,
+        win_rate: float,
+        n_trades: int,
+    ) -> list[str]:
+        """Detect patterns that suggest overfitting or spurious edges."""
+        flags: list[str] = []
+
+        # 1. Exit doing the heavy lifting
+        exit_type = m.get("exit", "")
+        if "signal_change" in exit_type and win_rate > 0.9:
+            flags.append(
+                "- **EXIT_EDGE:** 100% or near-100% win rate with `signal_change` exit "
+                "suggests the exit is doing the heavy lifting. The strategy holds until "
+                "profitable and never exits at a loss. Test with `fixed_holding_30d` or "
+                "`fixed_holding_60d` to see if win rate drops significantly."
+            )
+
+        # 2. Signal accuracy very low but win rate very high
+        if signal_acc and signal_acc < 0.3 and win_rate > 0.8:
+            flags.append(
+                f"- **FLIP_OVERFITTING:** Signal accuracy is only {_fmt_pct(signal_acc)} "
+                f"but win rate is {_fmt_pct(win_rate)}. The correlation flip mechanism "
+                "is compensating for poor signal quality. This suggests the flip is "
+                "overfitting to historical correlation regimes, which may not persist."
+            )
+
+        # 3. Check regime concentration (not "unknown" — that's just missing consensus data)
+        regimes = _compute_regime_performance(df)
+        if not regimes.is_empty() and len(regimes) > 1:
+            # Check if one regime dominates returns disproportionately
+            best = regimes.sort("total_return", descending=True).row(0, named=True)
+            total_ret_raw = (
+                df["trade_return"].sum() if "trade_return" in df.columns else 0
+            )
+            total_ret = (
+                float(total_ret_raw) if isinstance(total_ret_raw, (int, float)) else 0.0
+            )
+            best_ret_raw = best.get("total_return", 0)
+            best_ret = (
+                float(best_ret_raw) if isinstance(best_ret_raw, (int, float)) else 0.0
+            )
+            best_count = int(best.get("count", 0) or 0)
+            n_total = len(df)
+
+            # Flag if one regime contributes >60% of returns from <30% of trades
+            if (
+                total_ret > 0
+                and best_ret / total_ret > 0.6
+                and best_count / n_total < 0.3
+            ):
+                flags.append(
+                    f"- **REGIME_CONCENTRATION:** `{best['correlation_regime']}` regime "
+                    f"({best_count} trades, {best_count / n_total:.0%} of total) contributes "
+                    f"{best_ret / total_ret:.0%} of total return. Performance is fragile if "
+                    "this regime becomes less common or behaves differently."
+                )
+
+        # 4. Long-biased beta in disguise
+        if "trade_return" in df.columns and "direction" in df.columns:
+            shorts = df.filter(pl.col("direction") < 0)
+            short_ret_raw = shorts["trade_return"].sum() if not shorts.is_empty() else 0
+            short_ret = (
+                float(short_ret_raw) if isinstance(short_ret_raw, (int, float)) else 0.0
+            )
+            bh_proxy = m.get("buy_hold_return", None)
+
+            # If stock went up significantly but shorts are profitable, it's mean-reversion
+            bh_val = float(bh_proxy) if isinstance(bh_proxy, (int, float)) else 0.0
+            if bh_val > 0.5 and short_ret > 0 and len(shorts) > 2:
+                flags.append(
+                    f"- **BETA_DISGUISED:** Stock had {_fmt_pct(bh_proxy)} buy-and-hold return, "
+                    f"yet {len(shorts)} short trades returned {_fmt_pct(short_ret)} total. "
+                    "Winning shorts in an uptrending stock suggests mean-reversion capture "
+                    "within the trend, not directional prediction from signal data."
+                )
+
+        # 5. Infinite or very high profit factor with low trade count
+        profit_factor = m.get("profit_factor", 0)
+        if profit_factor == float("inf") or (profit_factor > 10 and n_trades < 30):
+            flags.append(
+                f"- **SUSPICIOUSLY_PERFECT:** Profit factor of {profit_factor:.1f} with only "
+                f"{n_trades} trades suggests the strategy may be avoiding losses through "
+                "exit timing rather than signal skill. These results almost always degrade "
+                "catastrophically out of sample."
+            )
+
+        # 6. Very high Sharpe with low trade count
+        sharpe = m.get("sharpe_ratio", 0)
+        if sharpe > 2.5 and n_trades < 30:
+            flags.append(
+                f"- **HIGH_SHARPE_LOW_N:** Sharpe of {sharpe:.2f} with only {n_trades} trades. "
+                "High Sharpe ratios from small samples are statistically unreliable. "
+                "The standard error of Sharpe is ~sqrt(1/N) ≈ "
+                f"{1 / np.sqrt(n_trades):.2f}, so true Sharpe could be near zero."
+            )
+
+        # 7. Holding period variability suggesting "hold until profitable"
+        if "holding_days" in df.columns:
+            std_raw = df["holding_days"].std()
+            mean_raw = df["holding_days"].mean()
+            holding_std = float(std_raw) if isinstance(std_raw, (int, float)) else 0.0
+            holding_mean = (
+                float(mean_raw) if isinstance(mean_raw, (int, float)) else 0.0
+            )
+            if (
+                holding_std > 0
+                and holding_mean > 0
+                and holding_std > holding_mean * 0.8
+            ):
+                flags.append(
+                    f"- **VARIABLE_HOLDING:** Holding period varies widely "
+                    f"(mean {holding_mean:.0f}d, std {holding_std:.0f}d). Combined with "
+                    "high win rate, this suggests the strategy holds losing positions "
+                    "longer until they recover — a form of survivorship bias in exits."
+                )
+
+        return flags

@@ -30,6 +30,9 @@ def _sanitize(obj: Any) -> Any:
 
 
 def save_json(path: Path, data: list[dict[str, Any]] | dict[str, Any]) -> None:
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True)
+
     with open(path, "w") as f:
         json.dump(_sanitize(data), f, indent=2, default=str)
 

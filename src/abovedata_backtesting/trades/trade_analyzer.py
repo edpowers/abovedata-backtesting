@@ -1,8 +1,26 @@
-"""Trade analysis and post-processing.
+"""
+Trade analyzer: enriches trades with ground truth and classifies outcomes.
 
-Classifies each trade by signal quality, correctness, and market context.
-Column names are derived from the visible_col parameter to match the
-output schema of load_signal_data / STLSignalProcessor.
+Key design principle: the analyzer READS decision context from EntryContext
+(recorded at entry time), never re-derives it. Post-hoc reconstruction is
+only used as a fallback for legacy trades without context.
+
+Accuracy Definitions
+--------------------
+signal_accuracy:
+    Did sign(UCC residual) predict sign(earnings surprise)?
+    Pure measure of UCC predictive power. Independent of any correlation
+    flip or position sizing.
+
+direction_accuracy:
+    Did the final trade direction (after any correlation flip) match the
+    actual price move over the holding period?
+    Measures strategy execution quality.
+
+flip_value:
+    For trades where a correlation flip was applied: did the flip improve
+    the outcome vs. what raw signal direction would have produced?
+    Measures whether the correlation regime adds value.
 """
 
 from __future__ import annotations
@@ -15,6 +33,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from abovedata_backtesting.entries.entry_context import EntryContext
 from abovedata_backtesting.trades.trade_log import Trade, TradeLog
 
 # =============================================================================
@@ -23,24 +42,13 @@ from abovedata_backtesting.trades.trade_log import Trade, TradeLog
 
 
 class TradeOutcome(Enum):
-    """Trade outcome based on TRADE DIRECTION correctness, not signal accuracy.
+    """Trade outcome based on TRADE DIRECTION correctness."""
 
-    For corr_aware strategies, the trade direction includes the correlation
-    flip: direction = sign(signal) × sign(correlation). So the trade can be
-    directionally correct even when the raw signal "missed" the surprise,
-    because the correlation flip compensated.
-
-    trade_direction_correct = (direction > 0 and price went up) or
-                              (direction < 0 and price went down)
-    """
-
-    DIRECTION_RIGHT_PROFIT = "direction_right_profit"  # Skill: right direction + profit
-    DIRECTION_RIGHT_LOSS = "direction_right_loss"  # Headwinds: right direction but lost
-    DIRECTION_WRONG_PROFIT = (
-        "direction_wrong_profit"  # Luck: wrong direction but profited
-    )
-    DIRECTION_WRONG_LOSS = "direction_wrong_loss"  # Expected: wrong direction + loss
-    NO_SIGNAL = "no_signal"  # No ground truth available
+    DIRECTION_RIGHT_PROFIT = "direction_right_profit"
+    DIRECTION_RIGHT_LOSS = "direction_right_loss"
+    DIRECTION_WRONG_PROFIT = "direction_wrong_profit"
+    DIRECTION_WRONG_LOSS = "direction_wrong_loss"
+    NO_SIGNAL = "no_signal"
 
 
 class CorrelationRegime(Enum):
@@ -66,9 +74,9 @@ class SignalQuality(Enum):
 
 @dataclass(frozen=True, slots=True)
 class AnalyzedTrade:
-    """A trade enriched with signal quality and outcome classification."""
+    """A trade enriched with ground truth and outcome classification."""
 
-    # Original trade
+    # Original trade data
     entry_date: dt.date
     exit_date: dt.date
     direction: float
@@ -77,27 +85,36 @@ class AnalyzedTrade:
     holding_days: int
     trade_return: float
 
-    # Signal context
+    # Entry context (from the entry rule, not reconstructed)
+    entry_context: EntryContext | None
+
+    # Signal (from context or fallback lookup)
     signal_date: dt.date | None
     signal_value: float | None
     signal_confidence: float | None
-    signal_direction: int  # +1, -1, or 0
+    signal_direction: int  # +1, -1, 0  — raw signal, before any flip
 
-    # Correlation context
-    contemp_corr: float | None
-    leading_corr: float | None
+    # Correlation (from context — what was actually used)
+    corr_col_used: str | None
+    corr_value_used: float | None
     correlation_regime: CorrelationRegime
+    flipped: bool  # whether correlation flip was applied
+
+    # Signal quality
     signal_quality: SignalQuality
 
     # Ground truth
     actual_beat_consensus: bool | None
-    actual_surprise: float | None  # (total_revenue - consensus) / consensus
+    actual_surprise: float | None
     actual_surprise_direction: int  # +1 beat, -1 miss, 0 unknown
     prediction_error: float | None
 
-    # Classification
-    signal_correct: bool  # Did UCC predict earnings surprise direction?
-    trade_direction_correct: bool  # Did trade direction match actual price move?
+    # Accuracy (three distinct measures)
+    signal_correct: bool  # sign(residual) == sign(surprise)
+    trade_direction_correct: bool  # final direction matched price move
+    flip_helped: bool | None  # for flipped trades: did flip improve outcome?
+
+    # Outcome
     outcome: TradeOutcome
 
     # Market context
@@ -113,18 +130,13 @@ class AnalyzedTrade:
 @dataclass
 class TradeAnalyzer:
     """
-    Post-processor that enriches trades with signal quality and outcome data.
+    Enriches trades with signal ground truth and outcome classification.
 
-    Column names are derived dynamically from visible_col to match
-    the df_fc_joined schema:
-      - {visible_col}_resid
-      - {visible_col}_to_total_revenue_contemp_corr
-      - {visible_col}_to_total_revenue_lead1_corr
-      - {visible_col}_to_total_revenue_contemp_confidence
-      - {visible_col}_to_total_revenue_contemp_pred_direction
-      - {visible_col}_to_total_revenue_contemp_pred_calibrated
-      - {visible_col}_to_total_revenue_contemp_regime_shift
-      - {visible_col}_to_total_revenue_contemp_hit
+    Reads EntryContext from each Trade to determine what was actually used
+    for direction, correlation, and confidence decisions.
+
+    Falls back to signal lookup only for ground truth (earnings surprise)
+    and for legacy trades without EntryContext.
     """
 
     signals: pl.DataFrame
@@ -132,17 +144,13 @@ class TradeAnalyzer:
     visible_col: str = "visible_revenue"
     date_col: str = "earnings_date"
 
-    def _col(self, suffix: str) -> str:
-        """Build column name from visible_col prefix."""
-        return f"{self.visible_col}_{suffix}"
-
     def analyze(
         self,
         trade_log: TradeLog,
         market_data: pl.DataFrame,
     ) -> TradeAnalysis:
         """Analyze all trades and return classified results."""
-        signal_lookup = self._build_signal_lookup()
+        ground_truth = self._build_ground_truth_lookup()
         bm_prices = (
             _build_price_lookup(self.benchmark_data)
             if self.benchmark_data is not None
@@ -151,29 +159,27 @@ class TradeAnalyzer:
 
         analyzed: list[AnalyzedTrade] = []
         for trade in trade_log.trades:
-            analyzed.append(self._analyze_trade(trade, signal_lookup, bm_prices))
+            analyzed.append(self._analyze_trade(trade, ground_truth, bm_prices))
 
         return TradeAnalysis(trades=analyzed)
 
-    def _build_signal_lookup(self) -> dict[dt.date, dict[str, Any]]:
-        """Build earnings_date → signal data lookup using actual column names."""
-        # Map logical names to actual column names in STL processor output.
-        # The STL processor uses flat names like contemp_corr_historical,
-        # NOT the relationship pattern visible_revenue_to_total_revenue_*.
+    def _build_ground_truth_lookup(self) -> dict[dt.date, dict[str, Any]]:
+        """
+        Build earnings_date → ground truth lookup.
+
+        Only contains earnings surprise data (what actually happened),
+        NOT signal/correlation decisions (those come from EntryContext).
+        """
         col_map: dict[str, str] = {
-            "signal_value": self._col("resid"),  # visible_revenue_resid
+            "signal_value": f"{self.visible_col}_resid",
+            "contemp_corr": "contemp_corr_historical",
+            "leading_corr": "leading_corr_historical",
             "contemp_confidence": "contemp_confidence",
             "leading_confidence": "leading_confidence",
-            "contemp_corr": "contemp_corr_historical",
-            "lead1_corr": "leading_corr_historical",
-            "contemp_corr_ma": "contemp_corr_ma",
-            "leading_corr_ma": "leading_corr_ma",
             "pred_direction": "predicted_surprise_direction",
-            "pred_calibrated": "predicted_surprise_calibrated",
             "prediction_error": "surprise_prediction_error_calibrated",
             "contemp_regime_shift": "contemp_regime_shift",
             "leading_regime_shift": "leading_regime_shift",
-            "signal_percentile": "signal_percentile",
             # Ground truth
             "total_revenue": "total_revenue",
             "consensus": "consensus",
@@ -181,9 +187,9 @@ class TradeAnalyzer:
             "consensus_beat": "consensus_beat",
         }
 
-        available_cols = set(self.signals.columns)
-
+        available = set(self.signals.columns)
         lookup: dict[dt.date, dict[str, Any]] = {}
+
         for row in self.signals.iter_rows(named=True):
             ed = row.get(self.date_col)
             if ed is None:
@@ -193,13 +199,9 @@ class TradeAnalyzer:
 
             data: dict[str, Any] = {}
             for key, col_name in col_map.items():
-                if col_name in available_cols:
-                    data[key] = row.get(col_name)
-                else:
-                    data[key] = None
+                data[key] = row.get(col_name) if col_name in available else None
 
-            # Use consensus_beat/surprise from data if already present,
-            # otherwise compute from total_revenue and consensus
+            # Compute consensus_beat if not present
             if data.get("consensus_beat") is None:
                 total_rev = data.get("total_revenue")
                 consensus = data.get("consensus")
@@ -214,54 +216,44 @@ class TradeAnalyzer:
     def _analyze_trade(
         self,
         trade: Trade,
-        signal_lookup: dict[dt.date, dict[str, Any]],
+        ground_truth: dict[dt.date, dict[str, Any]],
         bm_prices: dict[dt.date, float] | None,
     ) -> AnalyzedTrade:
-        """Classify a single trade."""
-        signal_date, sig = self._find_signal_for_trade(trade, signal_lookup)
+        """Classify a single trade using EntryContext + ground truth."""
+        ctx = trade.entry_context
 
-        # Signal context
-        signal_value = _safe_float(sig.get("signal_value")) if sig else None
-        contemp_conf = _safe_float(sig.get("contemp_confidence")) if sig else None
-        leading_conf = _safe_float(sig.get("leading_confidence")) if sig else None
-        # Prefer leading confidence if available
-        signal_confidence = (
-            leading_conf
-            if leading_conf is not None and leading_conf > 0
-            else contemp_conf
-        )
-
-        contemp_corr = _safe_float(sig.get("contemp_corr")) if sig else None
-        leading_corr = _safe_float(sig.get("lead1_corr")) if sig else None
-
-        # Signal direction from predicted direction, or sign of residual
-        pred_dir = sig.get("pred_direction") if sig else None
-        if pred_dir is not None and pred_dir != 0:
-            signal_direction = int(pred_dir)
-        elif signal_value is not None:
-            signal_direction = 1 if signal_value > 0 else -1 if signal_value < 0 else 0
+        # ── Signal context: from EntryContext if available ───────────
+        if ctx is not None and ctx.has_signal:
+            signal_date = ctx.signal_date
+            signal_value = ctx.signal_value
+            signal_direction = ctx.raw_direction
+            confidence = ctx.confidence_value_used
+            corr_col_used = ctx.corr_col_used
+            corr_value_used = ctx.corr_value_used
+            flipped = ctx.flipped
+            correlation_regime = _parse_regime(ctx.correlation_regime)
         else:
-            signal_direction = 0
+            # Fallback: find signal from ground truth lookup
+            signal_date, sig = self._find_signal_for_trade(trade, ground_truth)
+            signal_value = _safe_float(sig.get("signal_value")) if sig else None
+            signal_direction = (
+                (1 if signal_value > 0 else -1 if signal_value < 0 else 0)
+                if signal_value is not None
+                else 0
+            )
+            confidence = None
+            corr_col_used = None
+            corr_value_used = None
+            flipped = False
+            correlation_regime = CorrelationRegime.UNKNOWN
 
-        # Correlation regime — check both contemp and leading regime shifts
-        contemp_shift = sig.get("contemp_regime_shift") if sig else None
-        leading_shift = sig.get("leading_regime_shift") if sig else None
-        has_regime_shift = (contemp_shift is not None and contemp_shift != "") or (
-            leading_shift is not None and leading_shift != ""
-        )
-        correlation_regime = _classify_correlation_regime(
-            contemp_corr, leading_corr, has_regime_shift
-        )
+        # ── Ground truth: always from lookup ────────────────────────
+        gt_date = signal_date or self._find_nearest_earnings(trade, ground_truth)
+        gt = ground_truth.get(gt_date) if gt_date else None
 
-        # Signal quality
-        signal_quality = _classify_signal_quality(
-            signal_confidence, contemp_corr, leading_corr
-        )
-
-        # Ground truth
-        consensus_beat = sig.get("consensus_beat") if sig else None
-        consensus_surprise = _safe_float(sig.get("consensus_surprise")) if sig else None
-        prediction_error = _safe_float(sig.get("prediction_error")) if sig else None
+        consensus_beat = gt.get("consensus_beat") if gt else None
+        consensus_surprise = _safe_float(gt.get("consensus_surprise")) if gt else None
+        prediction_error = _safe_float(gt.get("prediction_error")) if gt else None
 
         if consensus_beat is True:
             actual_direction = 1
@@ -270,21 +262,27 @@ class TradeAnalyzer:
         else:
             actual_direction = 0
 
-        # Signal correctness: did UCC residual predict the surprise?
+        # ── Signal quality ──────────────────────────────────────────
+        if ctx is not None:
+            signal_quality = _classify_signal_quality_from_context(ctx)
+        else:
+            contemp_corr = _safe_float(gt.get("contemp_corr")) if gt else None
+            leading_corr = _safe_float(gt.get("leading_corr")) if gt else None
+            contemp_conf = _safe_float(gt.get("contemp_confidence")) if gt else None
+            signal_quality = _classify_signal_quality(
+                contemp_conf, contemp_corr, leading_corr
+            )
+
+        # ── Three accuracy measures ─────────────────────────────────
+
+        # 1. Signal accuracy: did UCC residual predict the surprise?
         signal_correct = (
             signal_direction != 0
             and actual_direction != 0
             and signal_direction == actual_direction
         )
 
-        # Trade direction correctness: did the TRADE direction (after corr flip)
-        # match the actual price move? This is what matters for corr_aware strategies.
-        # For momentum entries, direction comes from price, so this measures timing.
-        # For corr_aware entries, direction = sign(signal) × sign(corr), so this
-        # measures whether the full signal+correlation logic got the price move right.
-        # price_move = (exit_price / entry_price) - 1
-        # trade_direction_correct = (direction > 0 and price_move > 0) or
-        #                           (direction < 0 and price_move < 0)
+        # 2. Direction accuracy: did final trade direction match price move?
         raw_price_move = (
             (trade.exit_price / trade.entry_price - 1) if trade.entry_price > 0 else 0.0
         )
@@ -292,18 +290,28 @@ class TradeAnalyzer:
             trade.direction < 0 and raw_price_move < 0
         )
 
-        # Outcome classification based on trade direction (not signal accuracy)
+        # 3. Flip value: for flipped trades, did the flip help?
+        #    Compare: actual outcome vs what would have happened with raw direction
+        if flipped and signal_direction != 0:
+            # What would raw direction have returned?
+            raw_return = raw_price_move * signal_direction
+            # What did the flipped direction actually return?
+            actual_return = trade.trade_return
+            flip_helped = actual_return > raw_return
+        else:
+            flip_helped = None
+
+        # ── Outcome classification ──────────────────────────────────
         outcome = _classify_outcome(
             trade_direction_correct, trade.trade_return, actual_direction
         )
 
-        # Benchmark return over holding period
+        # ── Benchmark ───────────────────────────────────────────────
         benchmark_return = (
             _holding_period_return(bm_prices, trade.entry_date, trade.exit_date)
             if bm_prices
             else 0.0
         )
-        alpha = trade.trade_return - benchmark_return
 
         return AnalyzedTrade(
             entry_date=trade.entry_date,
@@ -313,13 +321,15 @@ class TradeAnalyzer:
             exit_price=trade.exit_price,
             holding_days=trade.holding_days,
             trade_return=trade.trade_return,
+            entry_context=ctx,
             signal_date=signal_date,
             signal_value=signal_value,
-            signal_confidence=signal_confidence,
+            signal_confidence=confidence,
             signal_direction=signal_direction,
-            contemp_corr=contemp_corr,
-            leading_corr=leading_corr,
+            corr_col_used=corr_col_used,
+            corr_value_used=corr_value_used,
             correlation_regime=correlation_regime,
+            flipped=flipped,
             signal_quality=signal_quality,
             actual_beat_consensus=consensus_beat
             if isinstance(consensus_beat, bool)
@@ -329,44 +339,47 @@ class TradeAnalyzer:
             prediction_error=prediction_error,
             signal_correct=signal_correct,
             trade_direction_correct=trade_direction_correct,
+            flip_helped=flip_helped,
             outcome=outcome,
             benchmark_return=benchmark_return,
-            alpha_contribution=alpha,
+            alpha_contribution=trade.trade_return - benchmark_return,
         )
 
     def _find_signal_for_trade(
         self,
         trade: Trade,
-        signal_lookup: dict[dt.date, dict[str, Any]],
+        ground_truth: dict[dt.date, dict[str, Any]],
     ) -> tuple[dt.date | None, dict[str, Any] | None]:
-        """
-        Find the signal (earnings date) this trade is associated with.
-
-        The trade was entered N days before an earnings date.
-        Find the nearest earnings_date >= entry_date within 120 calendar days.
-        """
-        if not signal_lookup:
-            return None, None
-
-        earnings_dates = sorted(signal_lookup.keys())
-        for ed in earnings_dates:
+        """Find nearest earnings date >= entry within 120 calendar days."""
+        for ed in sorted(ground_truth.keys()):
             if ed >= trade.entry_date:
-                delta = (ed - trade.entry_date).days
-                if delta <= 120:
-                    return ed, signal_lookup[ed]
+                if (ed - trade.entry_date).days <= 120:
+                    return ed, ground_truth[ed]
                 break
-
         return None, None
+
+    def _find_nearest_earnings(
+        self,
+        trade: Trade,
+        ground_truth: dict[dt.date, dict[str, Any]],
+    ) -> dt.date | None:
+        """Find nearest earnings date for ground truth lookup."""
+        for ed in sorted(ground_truth.keys()):
+            if ed >= trade.entry_date:
+                if (ed - trade.entry_date).days <= 120:
+                    return ed
+                break
+        return None
 
 
 # =============================================================================
-# Trade Analysis (collection)
+# Trade Analysis (collection with accuracy properties)
 # =============================================================================
 
 
 @dataclass
 class TradeAnalysis:
-    """Collection of analyzed trades with summary statistics."""
+    """Collection of analyzed trades with properly defined accuracy measures."""
 
     trades: list[AnalyzedTrade]
 
@@ -376,114 +389,100 @@ class TradeAnalysis:
 
         rows = []
         for t in self.trades:
-            rows.append(
-                {
-                    "entry_date": t.entry_date,
-                    "exit_date": t.exit_date,
-                    "direction": t.direction,
-                    "holding_days": t.holding_days,
-                    "trade_return": t.trade_return,
-                    "signal_date": t.signal_date,
-                    "signal_value": t.signal_value,
-                    "signal_confidence": t.signal_confidence,
-                    "signal_direction": t.signal_direction,
-                    "contemp_corr": t.contemp_corr,
-                    "leading_corr": t.leading_corr,
-                    "correlation_regime": t.correlation_regime.value,
-                    "signal_quality": t.signal_quality.value,
-                    "actual_beat_consensus": t.actual_beat_consensus,
-                    "actual_surprise": t.actual_surprise,
-                    "actual_surprise_direction": t.actual_surprise_direction,
-                    "prediction_error": t.prediction_error,
-                    "signal_correct": t.signal_correct,
-                    "trade_direction_correct": t.trade_direction_correct,
-                    "outcome": t.outcome.value,
-                    "benchmark_return": t.benchmark_return,
-                    "alpha_contribution": t.alpha_contribution,
-                }
-            )
-        return pl.DataFrame(rows)
+            row: dict[str, Any] = {
+                "entry_date": t.entry_date,
+                "exit_date": t.exit_date,
+                "direction": t.direction,
+                "holding_days": t.holding_days,
+                "trade_return": t.trade_return,
+                "signal_date": t.signal_date,
+                "signal_value": t.signal_value,
+                "signal_confidence": t.signal_confidence,
+                "signal_direction": t.signal_direction,
+                "corr_col_used": t.corr_col_used,
+                "corr_value_used": t.corr_value_used,
+                "correlation_regime": t.correlation_regime.value,
+                "flipped": t.flipped,
+                "signal_quality": t.signal_quality.value,
+                "actual_beat_consensus": t.actual_beat_consensus,
+                "actual_surprise": t.actual_surprise,
+                "actual_surprise_direction": t.actual_surprise_direction,
+                "prediction_error": t.prediction_error,
+                "signal_correct": t.signal_correct,
+                "trade_direction_correct": t.trade_direction_correct,
+                "flip_helped": t.flip_helped,
+                "outcome": t.outcome.value,
+                "benchmark_return": t.benchmark_return,
+                "alpha_contribution": t.alpha_contribution,
+            }
+
+            # Include entry type if available
+            if t.entry_context is not None:
+                row["entry_type"] = t.entry_context.entry_type
+
+            rows.append(row)
+
+        return pl.DataFrame(rows, infer_schema_length=10_000)
 
     @property
     def n_trades(self) -> int:
         return len(self.trades)
 
-    def outcome_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for t in self.trades:
-            key = t.outcome.value
-            counts[key] = counts.get(key, 0) + 1
-        return counts
-
-    def outcome_summary(self) -> pl.DataFrame:
-        df = self.to_dataframe()
-        if df.is_empty():
-            return df
-        return (
-            df.group_by("outcome")
-            .agg(
-                pl.len().alias("count"),
-                pl.col("trade_return").mean().alias("avg_return"),
-                pl.col("trade_return").sum().alias("total_return"),
-                pl.col("alpha_contribution").mean().alias("avg_alpha"),
-                pl.col("holding_days").mean().alias("avg_holding_days"),
-            )
-            .sort("count", descending=True)
-        )
-
-    def quality_summary(self) -> pl.DataFrame:
-        df = self.to_dataframe()
-        if df.is_empty():
-            return df
-        return (
-            df.group_by("signal_quality")
-            .agg(
-                pl.len().alias("count"),
-                pl.col("signal_correct").mean().alias("signal_accuracy"),
-                pl.col("trade_return").mean().alias("avg_return"),
-                pl.col("alpha_contribution").mean().alias("avg_alpha"),
-                (pl.col("trade_return") > 0).mean().alias("win_rate"),
-            )
-            .sort("signal_quality")
-        )
-
-    def regime_summary(self) -> pl.DataFrame:
-        df = self.to_dataframe()
-        if df.is_empty():
-            return df
-        return (
-            df.group_by("correlation_regime")
-            .agg(
-                pl.len().alias("count"),
-                pl.col("signal_correct").mean().alias("signal_accuracy"),
-                pl.col("trade_return").mean().alias("avg_return"),
-                pl.col("alpha_contribution").mean().alias("avg_alpha"),
-                (pl.col("trade_return") > 0).mean().alias("win_rate"),
-            )
-            .sort("count", descending=True)
-        )
+    # ── Accuracy Properties (clearly defined) ─────────────────────
 
     @property
     def signal_accuracy(self) -> float:
-        """Fraction of trades where UCC signal predicted surprise correctly."""
-        with_signal = [t for t in self.trades if t.actual_surprise_direction != 0]
-        if not with_signal:
+        """
+        Did sign(UCC residual) predict sign(earnings surprise)?
+
+        Pure UCC predictive power. Denominator: trades with both
+        a signal direction and a known earnings outcome.
+        """
+        eligible = [
+            t
+            for t in self.trades
+            if t.signal_direction != 0 and t.actual_surprise_direction != 0
+        ]
+        if not eligible:
             return 0.0
-        return sum(1 for t in with_signal if t.signal_correct) / len(with_signal)
+        return sum(1 for t in eligible if t.signal_correct) / len(eligible)
 
     @property
     def direction_accuracy(self) -> float:
-        """Fraction of trades where trade direction matched price move."""
-        with_signal = [t for t in self.trades if t.actual_surprise_direction != 0]
-        if not with_signal:
+        """
+        Did the final trade direction match the actual price move?
+
+        Measures strategy execution (including any correlation flip).
+        Denominator: all trades with a price move.
+        """
+        eligible = [
+            t for t in self.trades if abs(t.exit_price / t.entry_price - 1) > 1e-6
+        ]
+        if not eligible:
             return 0.0
-        return sum(1 for t in with_signal if t.trade_direction_correct) / len(
-            with_signal
-        )
+        return sum(1 for t in eligible if t.trade_direction_correct) / len(eligible)
+
+    @property
+    def flip_accuracy(self) -> float:
+        """
+        For flipped trades: what fraction were improved by the flip?
+
+        Measures whether the correlation regime classification adds value
+        over raw signal direction. Only defined for correlation-aware entries.
+        """
+        flipped = [t for t in self.trades if t.flip_helped is not None]
+        if not flipped:
+            return 0.0
+        return sum(1 for t in flipped if t.flip_helped) / len(flipped)
+
+    @property
+    def flip_count(self) -> int:
+        """Number of trades where a correlation flip was applied."""
+        return sum(1 for t in self.trades if t.flipped)
 
     @property
     def skill_ratio(self) -> float:
-        """direction_right_profit / (direction_right_profit + direction_wrong_loss)"""
+        """direction_right_profit / (direction_right_profit + direction_wrong_loss)."""
         counts = self.outcome_counts()
         skill = counts.get(TradeOutcome.DIRECTION_RIGHT_PROFIT.value, 0)
         expected_loss = counts.get(TradeOutcome.DIRECTION_WRONG_LOSS.value, 0)
@@ -510,30 +509,101 @@ class TradeAnalysis:
             return 0.0
         return sum(1 for t in wrong if t.trade_return > 0) / len(wrong)
 
-    def full_summary(self) -> dict[str, Any]:
-        returns = np.array([t.trade_return for t in self.trades])
-        alphas = np.array([t.alpha_contribution for t in self.trades])
+    # ── Summaries ─────────────────────────────────────────────────
 
-        diversity = self.diversity_metrics()
+    def outcome_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for t in self.trades:
+            key = t.outcome.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
+    def outcome_summary(self) -> pl.DataFrame:
+        df = self.to_dataframe()
+        if df.is_empty():
+            return df
+        return (
+            df.group_by("outcome")
+            .agg(
+                pl.len().alias("count"),
+                pl.col("trade_return").mean().alias("avg_return"),
+                pl.col("trade_return").sum().alias("total_return"),
+                pl.col("alpha_contribution").mean().alias("avg_alpha"),
+                pl.col("holding_days").mean().alias("avg_holding_days"),
+            )
+            .sort("count", descending=True)
+        )
+
+    def regime_summary(self) -> pl.DataFrame:
+        df = self.to_dataframe()
+        if df.is_empty():
+            return df
+        return (
+            df.group_by("correlation_regime")
+            .agg(
+                pl.len().alias("count"),
+                pl.col("signal_correct").mean().alias("signal_accuracy"),
+                pl.col("trade_direction_correct").mean().alias("direction_accuracy"),
+                pl.col("trade_return").mean().alias("avg_return"),
+                pl.col("alpha_contribution").mean().alias("avg_alpha"),
+                (pl.col("trade_return") > 0).mean().alias("win_rate"),
+            )
+            .sort("count", descending=True)
+        )
+
+    def quality_summary(self) -> pl.DataFrame:
+        """Signal quality breakdown with accuracy and return stats."""
+        df = self.to_dataframe()
+        if df.is_empty():
+            return df
+        return (
+            df.group_by("signal_quality")
+            .agg(
+                pl.len().alias("count"),
+                pl.col("signal_correct").mean().alias("signal_accuracy"),
+                pl.col("trade_direction_correct").mean().alias("direction_accuracy"),
+                pl.col("trade_return").mean().alias("avg_return"),
+                pl.col("alpha_contribution").mean().alias("avg_alpha"),
+                (pl.col("trade_return") > 0).mean().alias("win_rate"),
+            )
+            .sort("signal_quality")
+        )
+
+    def flip_summary(self) -> pl.DataFrame:
+        """Summary of flipped vs unflipped trades."""
+        df = self.to_dataframe()
+        if df.is_empty():
+            return df
+        return (
+            df.group_by("flipped")
+            .agg(
+                pl.len().alias("count"),
+                pl.col("signal_correct").mean().alias("signal_accuracy"),
+                pl.col("trade_direction_correct").mean().alias("direction_accuracy"),
+                pl.col("trade_return").mean().alias("avg_return"),
+                pl.col("alpha_contribution").mean().alias("avg_alpha"),
+                (pl.col("trade_return") > 0).mean().alias("win_rate"),
+            )
+            .sort("flipped")
+        )
+
+    def accuracy_summary(self) -> dict[str, float | int]:
+        """All three accuracy measures in one dict."""
         return {
-            "n_trades": self.n_trades,
             "signal_accuracy": self.signal_accuracy,
             "direction_accuracy": self.direction_accuracy,
+            "flip_accuracy": self.flip_accuracy,
+            "flip_count": self.flip_count,
+            "n_trades": self.n_trades,
+            "win_rate": float(np.mean([t.trade_return > 0 for t in self.trades]))
+            if self.trades
+            else 0.0,
             "skill_ratio": self.skill_ratio,
             "headwind_ratio": self.headwind_ratio,
             "luck_ratio": self.luck_ratio,
-            "avg_return": float(np.mean(returns)) if len(returns) > 0 else 0.0,
-            "avg_alpha": float(np.mean(alphas)) if len(alphas) > 0 else 0.0,
-            "total_return": float(np.prod(1 + returns) - 1)
-            if len(returns) > 0
-            else 0.0,
-            "win_rate": float(np.mean(returns > 0)) if len(returns) > 0 else 0.0,
-            "outcome_counts": self.outcome_counts(),
-            **diversity,
         }
 
-    # ── Diversity / concentration metrics ────────────────────────────
+    # ── Diversity / Concentration ─────────────────────────────────
 
     def diversity_metrics(self) -> dict[str, Any]:
         """
@@ -555,7 +625,7 @@ class TradeAnalysis:
         if n == 0:
             return self._empty_diversity()
 
-        # ── HHI on absolute return contributions ────────────────────
+        # HHI on absolute return contributions
         abs_returns = np.abs(returns)
         total_abs = abs_returns.sum()
         if total_abs > 0:
@@ -564,7 +634,7 @@ class TradeAnalysis:
         else:
             hhi = 0.0
 
-        # ── Top-N concentration (% of gross profit) ────────────────
+        # Top-N concentration (% of gross profit)
         gross_profits = returns[returns > 0]
         total_gross_profit = gross_profits.sum() if len(gross_profits) > 0 else 0.0
 
@@ -584,7 +654,7 @@ class TradeAnalysis:
         else:
             top1_pct = top3_pct = top5_pct = 0.0
 
-        # ── Compounded return excluding top-K trades ────────────────
+        # Compounded return excluding top-K trades
         sorted_idx = np.argsort(returns)[::-1]
         return_ex_top1 = (
             float(np.prod(1 + np.delete(returns, sorted_idx[:1])) - 1) if n > 1 else 0.0
@@ -593,13 +663,13 @@ class TradeAnalysis:
             float(np.prod(1 + np.delete(returns, sorted_idx[:3])) - 1) if n > 3 else 0.0
         )
 
-        # ── Profit factor ───────────────────────────────────────────
+        # Profit factor
         gross_loss = np.abs(returns[returns < 0]).sum()
         profit_factor = (
             float(total_gross_profit / gross_loss) if gross_loss > 0 else float("inf")
         )
 
-        # ── Expectancy ──────────────────────────────────────────────
+        # Expectancy
         winners = returns[returns > 0]
         losers = returns[returns < 0]
         win_rate = len(winners) / n if n > 0 else 0.0
@@ -608,7 +678,7 @@ class TradeAnalysis:
         avg_loss = float(np.abs(losers).mean()) if len(losers) > 0 else 0.0
         expectancy = avg_win * win_rate - avg_loss * loss_rate
 
-        # ── Tail ratio ──────────────────────────────────────────────
+        # Tail ratio
         k = max(1, n // 10)
         sorted_asc = np.sort(returns)
         top_tail = float(sorted_asc[-k:].mean())
@@ -647,6 +717,25 @@ class TradeAnalysis:
         """Diversity metrics as a single-row DataFrame for display."""
         return pl.DataFrame([self.diversity_metrics()])
 
+    def full_summary(self) -> dict[str, Any]:
+        """Full summary including accuracy and diversity metrics."""
+        returns = np.array([t.trade_return for t in self.trades])
+        alphas = np.array([t.alpha_contribution for t in self.trades])
+
+        base: dict[str, Any] = {
+            "n_trades": self.n_trades,
+            "avg_return": float(np.mean(returns)) if len(returns) > 0 else 0.0,
+            "avg_alpha": float(np.mean(alphas)) if len(alphas) > 0 else 0.0,
+            "total_return": float(np.prod(1 + returns) - 1)
+            if len(returns) > 0
+            else 0.0,
+            "win_rate": float(np.mean(returns > 0)) if len(returns) > 0 else 0.0,
+            "outcome_counts": self.outcome_counts(),
+        }
+        base.update(self.accuracy_summary())
+        base.update(self.diversity_metrics())
+        return base
+
 
 # =============================================================================
 # Helpers
@@ -663,24 +752,29 @@ def _safe_float(val: Any) -> float | None:
         return None
 
 
-def _classify_correlation_regime(
-    contemp_corr: float | None,
-    leading_corr: float | None,
-    regime_shift: bool,
-) -> CorrelationRegime:
-    if regime_shift:
-        return CorrelationRegime.REGIME_SHIFT
-    corr = leading_corr if leading_corr is not None else contemp_corr
-    if corr is None:
+def _parse_regime(regime_str: str | None) -> CorrelationRegime:
+    """Parse a regime string into the enum, defaulting to UNKNOWN."""
+    if regime_str is None:
         return CorrelationRegime.UNKNOWN
-    if corr > 0.5:
-        return CorrelationRegime.STRONG_POSITIVE
-    elif corr > 0:
-        return CorrelationRegime.WEAK_POSITIVE
-    elif corr > -0.5:
-        return CorrelationRegime.WEAK_NEGATIVE
+    try:
+        return CorrelationRegime(regime_str)
+    except ValueError:
+        return CorrelationRegime.UNKNOWN
+
+
+def _classify_signal_quality_from_context(ctx: EntryContext) -> SignalQuality:
+    """Classify signal quality from what the entry actually used."""
+    conf = ctx.confidence_value_used
+    corr = abs(ctx.corr_value_used) if ctx.corr_value_used is not None else 0.0
+
+    if conf is None:
+        return SignalQuality.NO_DATA
+    if conf > 0.5 and corr > 0.5:
+        return SignalQuality.HIGH
+    elif conf > 0.3 or corr > 0.3:
+        return SignalQuality.MEDIUM
     else:
-        return CorrelationRegime.STRONG_NEGATIVE
+        return SignalQuality.LOW
 
 
 def _classify_signal_quality(
@@ -688,6 +782,7 @@ def _classify_signal_quality(
     contemp_corr: float | None,
     leading_corr: float | None,
 ) -> SignalQuality:
+    """Fallback for legacy trades without context."""
     if confidence is None:
         return SignalQuality.NO_DATA
     corr_strength = max(
@@ -707,7 +802,6 @@ def _classify_outcome(
     trade_return: float,
     actual_direction: int,
 ) -> TradeOutcome:
-    """Classify trade outcome based on trade direction correctness."""
     if actual_direction == 0:
         return TradeOutcome.NO_SIGNAL
     profitable = trade_return > 0

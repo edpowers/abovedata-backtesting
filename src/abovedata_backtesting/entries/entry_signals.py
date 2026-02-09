@@ -1,12 +1,3 @@
-"""Entry signal definitions for strategy grid search.
-
-Each EntryRule produces positions ONLY on signal-derived dates
-(earnings_date minus entry_days_before trading days). Between
-signal dates, position is 0 unless held by an exit rule.
-
-This prevents the compounding illusion from daily position × return.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -17,53 +8,32 @@ from typing import Any, Self
 
 import polars as pl
 
+from abovedata_backtesting.entries.entry_context import (
+    ENTRY_CONTEXT_COLUMNS,
+    EntryContext,
+)
+
 
 class EntryRule(ABC):
-    """
-    Abstract base class for entry signal logic.
-
-    Entry rules produce positions ONLY on specific dates derived from
-    signal/earnings dates. The entry_days_before parameter controls
-    how many trading days before the signal date to enter.
-    """
+    """Abstract base class for entry signal logic."""
 
     @abstractmethod
     def apply(
         self,
         market_data: pl.DataFrame,
         signals: pl.DataFrame,
-    ) -> pl.DataFrame:
-        """
-        Compute positions from market data and signals.
-
-        Parameters
-        ----------
-        market_data : pl.DataFrame
-            Daily OHLCV with at least: date, close. Sorted by date.
-        signals : pl.DataFrame
-            Fundamental signal data with earnings_date and signal columns.
-
-        Returns
-        -------
-        pl.DataFrame
-            market_data with added columns: position, signal_strength, confidence.
-            position is non-zero ONLY on entry dates, then forward-filled
-            until the next signal or end of data. Exit rules trim from there.
-        """
+    ) -> pl.DataFrame: ...
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Human-readable identifier including parameter values."""
+    def name(self) -> str: ...
 
     @abstractmethod
-    def params(self) -> dict[str, Any]:
-        """Return current parameters as a flat dict (for results DataFrame)."""
+    def params(self) -> dict[str, Any]: ...
 
     @classmethod
     @abstractmethod
-    def grid(cls, **param_lists: list[Any]) -> list[Self]:
-        """Generate all parameter combinations from lists of values."""
+    def grid(cls, **param_lists: list[Any]) -> list[Self]: ...
 
 
 def _resolve_entry_dates(
@@ -71,19 +41,13 @@ def _resolve_entry_dates(
     signal_dates: list[dt.date],
     entry_days_before: int,
 ) -> dict[dt.date, dt.date]:
-    """
-    Map each signal_date to an entry_date that is N trading days before it.
-
-    Returns dict of {entry_date: signal_date}.
-    If entry_date falls before the market data range, it's skipped.
-    """
+    """Map each signal_date to an entry_date N trading days before it."""
     trading_dates = market_data["date"].to_list()
     date_to_idx = {d: i for i, d in enumerate(trading_dates)}
 
     entry_map: dict[dt.date, dt.date] = {}
     for sig_date in signal_dates:
         if sig_date not in date_to_idx:
-            # Find nearest prior trading day
             candidates = [d for d in trading_dates if d <= sig_date]
             if not candidates:
                 continue
@@ -104,13 +68,13 @@ def _apply_entry_positions(
     directions: dict[dt.date, float],
     strengths: dict[dt.date, float],
     confidences: dict[dt.date, float],
+    contexts: dict[dt.date, EntryContext] | None = None,
 ) -> pl.DataFrame:
     """
     Apply sparse entry positions to market data, then forward-fill.
 
-    Entry dates get their computed position. Between entries, the most
-    recent non-zero position is held (forward-filled). Exit rules
-    then trim positions based on their logic.
+    If contexts is provided, also writes entry context columns that
+    are forward-filled alongside position/signal_strength/confidence.
     """
     entry_dates_set = set(entry_map.keys())
     dates = market_data["date"].to_list()
@@ -122,6 +86,15 @@ def _apply_entry_positions(
     current_strength = 0.0
     current_conf = 0.0
 
+    # Context tracking
+    has_context = contexts is not None and len(contexts) > 0
+    ctx_lists: dict[str, list[Any]] = {}
+    ctx_current: dict[str, Any] = {}
+    if has_context:
+        for col in ENTRY_CONTEXT_COLUMNS:
+            ctx_lists[col] = []
+            ctx_current[col] = None
+
     for d in dates:
         if d in entry_dates_set:
             sig_date = entry_map[d]
@@ -130,15 +103,56 @@ def _apply_entry_positions(
             current_strength = strengths.get(sig_date, 0.0)
             current_conf = confidences.get(sig_date, 0.0)
 
+            if has_context and contexts is not None:
+                ctx = contexts.get(sig_date)
+                if ctx is not None:
+                    ctx_current = _context_to_row(ctx)
+                else:
+                    ctx_current = {col: None for col in ENTRY_CONTEXT_COLUMNS}
+
         positions.append(current_pos)
         signal_strengths.append(current_strength)
         confs.append(current_conf)
 
-    return market_data.with_columns(
+        if has_context:
+            for col in ENTRY_CONTEXT_COLUMNS:
+                ctx_lists[col].append(ctx_current.get(col))
+
+    result = market_data.with_columns(
         pl.Series("position", positions, dtype=pl.Float64),
         pl.Series("signal_strength", signal_strengths, dtype=pl.Float64),
         pl.Series("confidence", confs, dtype=pl.Float64),
     )
+
+    # Add context columns if present
+    if has_context:
+        for col, values in ctx_lists.items():
+            result = result.with_columns(pl.Series(col, values))
+
+    return result
+
+
+def _context_to_row(ctx: EntryContext) -> dict[str, Any]:
+    """Convert an EntryContext to a dict matching ENTRY_CONTEXT_COLUMNS."""
+    return {
+        "entry_type": ctx.entry_type,
+        "entry_signal_col": ctx.signal_col,
+        "entry_signal_value": ctx.signal_value,
+        "entry_signal_date": ctx.signal_date,
+        "entry_raw_direction": ctx.raw_direction,
+        "entry_final_direction": ctx.final_direction,
+        "entry_flipped": ctx.flipped,
+        "entry_corr_col_used": ctx.corr_col_used,
+        "entry_corr_value_used": ctx.corr_value_used,
+        "entry_prior_quarter_corr": ctx.prior_quarter_corr,
+        "entry_confidence_col_used": ctx.confidence_col_used,
+        "entry_confidence_value_used": ctx.confidence_value_used,
+        "entry_correlation_regime": ctx.correlation_regime,
+        "entry_regime_shift_detected": ctx.regime_shift_detected,
+        "entry_regime_shift_skipped": ctx.regime_shift_skipped,
+        "entry_momentum_zscore": ctx.momentum_zscore,
+        "entry_lookback_days": ctx.lookback_days,
+    }
 
 
 # =============================================================================
@@ -148,12 +162,7 @@ def _apply_entry_positions(
 
 @dataclass(frozen=True, slots=True)
 class MomentumEntry(EntryRule):
-    """
-    Enter based on price momentum z-score, timed to signal dates.
-
-    Momentum is evaluated at entry_date (N trading days before earnings).
-    Long when momentum z-score > threshold, short when < -threshold.
-    """
+    """Enter based on price momentum z-score, timed to signal dates."""
 
     lookback_days: int = 20
     zscore_threshold: float = 1.0
@@ -206,7 +215,6 @@ class MomentumEntry(EntryRule):
             market_data, signal_dates, self.entry_days_before
         )
 
-        # Compute momentum z-score on full market data
         momentum = pl.col("close") / pl.col("close").shift(self.lookback_days) - 1
         lagged_momentum = momentum.shift(1)
 
@@ -231,22 +239,36 @@ class MomentumEntry(EntryRule):
         directions: dict[dt.date, float] = {}
         strengths: dict[dt.date, float] = {}
         confidences: dict[dt.date, float] = {}
+        contexts: dict[dt.date, EntryContext] = {}
 
         for entry_date, sig_date in entry_map.items():
             z = zscore_lookup.get(entry_date)
-            if z is None or z != z:  # NaN check
+            if z is None or z != z:
                 continue
+
             if z > self.zscore_threshold:
-                directions[sig_date] = 1.0
+                direction = 1.0
             elif z < -self.zscore_threshold:
-                directions[sig_date] = -1.0
+                direction = -1.0
             else:
-                directions[sig_date] = 0.0
+                direction = 0.0
+
+            directions[sig_date] = direction
             strengths[sig_date] = z if z == z else 0.0
             confidences[sig_date] = min(1.0, abs(z) / 3.0) if z == z else 0.0
 
+            contexts[sig_date] = EntryContext(
+                entry_type="momentum",
+                signal_date=sig_date,
+                raw_direction=int(direction),
+                final_direction=int(direction),
+                flipped=False,
+                momentum_zscore=z if z == z else None,
+                lookback_days=self.lookback_days,
+            )
+
         return _apply_entry_positions(
-            market_data, entry_map, directions, strengths, confidences
+            market_data, entry_map, directions, strengths, confidences, contexts
         )
 
 
@@ -257,10 +279,7 @@ class MomentumEntry(EntryRule):
 
 @dataclass(frozen=True, slots=True)
 class SignalThresholdEntry(EntryRule):
-    """
-    Enter based on fundamental signal crossing a threshold.
-    Entry is timed to entry_days_before the earnings date.
-    """
+    """Enter based on fundamental signal crossing a threshold."""
 
     signal_col: str = "visible_revenue_resid"
     long_threshold: float = 0.5
@@ -344,27 +363,42 @@ class SignalThresholdEntry(EntryRule):
         directions: dict[dt.date, float] = {}
         strengths: dict[dt.date, float] = {}
         confidences: dict[dt.date, float] = {}
+        contexts: dict[dt.date, EntryContext] = {}
 
         for _entry_date, sig_date in entry_map.items():
             val = signal_vals.get(sig_date)
             if val is None or val != val:
                 continue
             if val >= self.long_threshold:
-                directions[sig_date] = 1.0
+                direction = 1.0
             elif val <= self.short_threshold:
-                directions[sig_date] = -1.0
+                direction = -1.0
             else:
-                directions[sig_date] = 0.0
+                direction = 0.0
+
+            directions[sig_date] = direction
             strengths[sig_date] = val
             conf = signal_confs.get(sig_date)
-            confidences[sig_date] = (
+            conf_val = (
                 min(1.0, abs(conf))
                 if conf is not None and conf == conf
                 else min(1.0, abs(val) / 3.0)
             )
+            confidences[sig_date] = conf_val
+
+            contexts[sig_date] = EntryContext(
+                entry_type="signal_threshold",
+                signal_col=self.signal_col,
+                signal_value=val,
+                signal_date=sig_date,
+                raw_direction=int(direction),
+                final_direction=int(direction),
+                flipped=False,
+                confidence_value_used=conf_val,
+            )
 
         return _apply_entry_positions(
-            market_data, entry_map, directions, strengths, confidences
+            market_data, entry_map, directions, strengths, confidences, contexts
         )
 
 
@@ -375,10 +409,7 @@ class SignalThresholdEntry(EntryRule):
 
 @dataclass(frozen=True, slots=True)
 class DivergenceEntry(EntryRule):
-    """
-    Enter when price momentum diverges from fundamental signal.
-    Price up + fundamental weak → Short. Price down + fundamental strong → Long.
-    """
+    """Enter when price momentum diverges from fundamental signal."""
 
     signal_col: str = "visible_revenue_resid"
     lookback_days: int = 20
@@ -480,6 +511,7 @@ class DivergenceEntry(EntryRule):
         directions: dict[dt.date, float] = {}
         strengths: dict[dt.date, float] = {}
         confidences: dict[dt.date, float] = {}
+        contexts: dict[dt.date, EntryContext] = {}
 
         for entry_date, sig_date in entry_map.items():
             z = zscore_lookup.get(entry_date)
@@ -508,10 +540,24 @@ class DivergenceEntry(EntryRule):
             strengths[sig_date] = val
             mom_f = min(1.0, abs(z) / 3.0)
             fund_f = min(1.0, abs(val) / 3.0)
-            confidences[sig_date] = (mom_f * fund_f) ** 0.5 * weight
+            conf_val = (mom_f * fund_f) ** 0.5 * weight
+            confidences[sig_date] = conf_val
+
+            contexts[sig_date] = EntryContext(
+                entry_type="divergence",
+                signal_col=self.signal_col,
+                signal_value=val,
+                signal_date=sig_date,
+                raw_direction=int(_sign(val)),
+                final_direction=int(direction),
+                flipped=(_sign(val) != direction and direction != 0),
+                momentum_zscore=z if z == z else None,
+                lookback_days=self.lookback_days,
+                confidence_value_used=conf_val,
+            )
 
         return _apply_entry_positions(
-            market_data, entry_map, directions, strengths, confidences
+            market_data, entry_map, directions, strengths, confidences, contexts
         )
 
 
@@ -522,10 +568,7 @@ class DivergenceEntry(EntryRule):
 
 @dataclass(frozen=True, slots=True)
 class SignalMomentumEntry(EntryRule):
-    """
-    Enter when fundamental signal AND price momentum agree.
-    Both must exceed thresholds in the same direction.
-    """
+    """Enter when fundamental signal AND price momentum agree."""
 
     signal_col: str = "visible_revenue_resid"
     signal_threshold: float = 0.5
@@ -622,6 +665,7 @@ class SignalMomentumEntry(EntryRule):
         directions: dict[dt.date, float] = {}
         strengths: dict[dt.date, float] = {}
         confidences: dict[dt.date, float] = {}
+        contexts: dict[dt.date, EntryContext] = {}
 
         for entry_date, sig_date in entry_map.items():
             z = zscore_lookup.get(entry_date)
@@ -635,17 +679,36 @@ class SignalMomentumEntry(EntryRule):
             short_mom = z < -self.momentum_zscore_threshold
 
             if long_sig and long_mom:
-                directions[sig_date] = 1.0
+                direction = 1.0
             elif short_sig and short_mom:
-                directions[sig_date] = -1.0
+                direction = -1.0
             else:
-                directions[sig_date] = 0.0
+                direction = 0.0
 
+            directions[sig_date] = direction
             strengths[sig_date] = val
             mom_f = min(1.0, abs(z) / 3.0)
             fund_f = min(1.0, abs(val) / 3.0)
-            confidences[sig_date] = (mom_f * fund_f) ** 0.5
+            conf_val = (mom_f * fund_f) ** 0.5
+            confidences[sig_date] = conf_val
+
+            contexts[sig_date] = EntryContext(
+                entry_type="signal_momentum_confirmation",
+                signal_col=self.signal_col,
+                signal_value=val,
+                signal_date=sig_date,
+                raw_direction=int(_sign(val)),
+                final_direction=int(direction),
+                flipped=False,
+                momentum_zscore=z if z == z else None,
+                lookback_days=self.lookback_days,
+                confidence_value_used=conf_val,
+            )
 
         return _apply_entry_positions(
-            market_data, entry_map, directions, strengths, confidences
+            market_data, entry_map, directions, strengths, confidences, contexts
         )
+
+
+def _sign(x: float) -> float:
+    return 1.0 if x > 0 else -1.0 if x < 0 else 0.0

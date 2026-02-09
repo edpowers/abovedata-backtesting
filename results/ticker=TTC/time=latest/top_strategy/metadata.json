@@ -1,0 +1,35 @@
+{
+  "name": "momentum_lb20_z0.5_e20d \u00d7 sl-10%_tp20%",
+  "entry": "momentum_lb20_z0.5_e20d",
+  "exit": "sl-10%_tp20%",
+  "entry_params": {
+    "entry_type": "momentum",
+    "lookback_days": 20,
+    "zscore_threshold": 0.5,
+    "zscore_window": 60,
+    "entry_days_before": 20
+  },
+  "exit_params": {
+    "exit_type": "sl-10%_tp20%"
+  },
+  "sharpe": 0.47311767939813304,
+  "total_return": 3.598560124372768,
+  "annualized_return": 0.09396605191398089,
+  "max_drawdown": -0.3448829656178195,
+  "n_trades": 43,
+  "win_rate": 0.6511627906976745,
+  "signal_accuracy": 0.6666666666666666,
+  "direction_accuracy": 0.6511627906976745,
+  "skill_ratio": 0.6176470588235294,
+  "hhi": 0.033060752907824655,
+  "top1_pct": 0.07979205946989976,
+  "top3_pct": 0.22017830952489353,
+  "return_ex_top1": 2.700577495971067,
+  "return_ex_top3": 1.5132816172988508,
+  "profit_factor": 2.467221805551399,
+  "expectancy": 0.04205889706196131,
+  "tail_ratio": 1.6695181413017621,
+  "max_single_contribution": 0.2426601332844296,
+  "buy_hold_total_return": 2.5958832735568653,
+  "buy_hold_annualized_return": 0.12249343015771941
+}

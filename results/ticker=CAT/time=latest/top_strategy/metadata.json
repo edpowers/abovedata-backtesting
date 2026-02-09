@@ -1,0 +1,35 @@
+{
+  "name": "momentum_lb10_z0.5_e10d \u00d7 trailing_stop_5%",
+  "entry": "momentum_lb10_z0.5_e10d",
+  "exit": "trailing_stop_5%",
+  "entry_params": {
+    "entry_type": "momentum",
+    "lookback_days": 10,
+    "zscore_threshold": 0.5,
+    "zscore_window": 60,
+    "entry_days_before": 10
+  },
+  "exit_params": {
+    "exit_type": "trailing_stop_5%"
+  },
+  "sharpe": 1.8223288688310393,
+  "total_return": 3.5869318752676627,
+  "annualized_return": 0.32245547506561545,
+  "max_drawdown": -0.28325350073017175,
+  "n_trades": 162,
+  "win_rate": 0.47530864197530864,
+  "signal_accuracy": 0.4430379746835443,
+  "direction_accuracy": 0.47530864197530864,
+  "skill_ratio": 0.5118110236220472,
+  "hhi": 0.010475304438078446,
+  "top1_pct": 0.04501343793590635,
+  "top3_pct": 0.12633499585713018,
+  "return_ex_top1": 2.8078459488138683,
+  "return_ex_top3": 1.7129300670823868,
+  "profit_factor": 1.6481958680420232,
+  "expectancy": 0.011034336603280868,
+  "tail_ratio": 2.29341470117503,
+  "max_single_contribution": 0.20460016947284188,
+  "buy_hold_total_return": 9.54066219213509,
+  "buy_hold_annualized_return": 0.2369580344371831
+}
