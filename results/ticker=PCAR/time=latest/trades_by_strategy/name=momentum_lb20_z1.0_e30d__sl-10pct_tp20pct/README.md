@@ -1,9 +1,9 @@
-# Strategy Analysis: momentum_lb20_z1.5_e30d × sl-10%_tp20%
+# Strategy Analysis: momentum_lb20_z1.0_e30d × sl-10%_tp20%
 
 **Ticker:** PCAR
-**Entry:** `momentum_lb20_z1.5_e30d`
+**Entry:** `momentum_lb20_z1.0_e30d`
 **Exit:** `sl-10%_tp20%`
-**Period:** 2021-06-14 to 2026-02-06
+**Period:** 2020-12-10 to 2026-02-06
 **Generated:** Auto-generated strategy analysis report
 
 ## Strategy Description
@@ -13,7 +13,7 @@ Entry type: **momentum**
 ### Entry Parameters
 
 - **lookback_days:** `20`
-- **zscore_threshold:** `1.5`
+- **zscore_threshold:** `1.0`
 - **zscore_window:** `60`
 - **entry_days_before:** `30` — Number of trading days before earnings to enter. Higher values capture the pre-earnings drift but increase exposure to non-earnings price moves
 
@@ -26,47 +26,38 @@ Entry type: **momentum**
 
 | Metric | Value |
 |---|---|
-| **Total Return** | 118.4% |
-| **Annualized Return** | 6.9% |
-| **Sharpe Ratio** | 0.870 |
-| **Max Drawdown** | -12.4% |
-| **Total Trades** | 8 |
-| **Win Rate** | 87.5% |
-| **Signal Accuracy** | 25.0% |
-| **Direction Accuracy** | 87.5% |
-| **Skill Ratio** | 100.0% |
-| **Profit Factor** | 1520.19 |
-| **Expectancy** | 0.1043 |
-| **Tail Ratio** | 362.50 |
+| **Total Return** | 94.9% |
+| **Annualized Return** | 5.5% |
+| **Sharpe Ratio** | 0.510 |
+| **Max Drawdown** | -23.6% |
+| **Total Trades** | 17 |
+| **Win Rate** | 58.8% |
+| **Signal Accuracy** | 62.5% |
+| **Direction Accuracy** | 58.8% |
+| **Skill Ratio** | 64.3% |
+| **Profit Factor** | 3.09 |
+| **Expectancy** | 0.0452 |
+| **Tail Ratio** | 1.41 |
 
 ### vs Buy & Hold (same ticker)
 
 | Metric | Buy & Hold | Strategy | Difference |
 |---|---|---|---|
-| Total Return | 150.9% | 118.4% | -32.6% |
-| Annualized Return | 21.9% | 6.9% | — |
+| Total Return | 170.5% | 94.9% | -75.6% |
+| Annualized Return | 21.4% | 5.5% | — |
 
 ## Diversity & Concentration
 
-Diversification: **Well-diversified** — close to evenly distributed across trades (HHI ratio: 1.4×)
+Diversification: **Moderately diversified** — some concentration, generally acceptable (HHI ratio: 1.6×)
 
 | Metric | Value | Notes |
 |---|---|---|
-| HHI | 0.1697 | Ideal for 8 trades: 0.1250 |
-| Top-1 Trade | 23.8% of gross profit | ⚠️ Notable concentration |
-| Top-3 Trades | 61.0% of gross profit | ⚠️ Notable concentration |
-| Return ex-Top-1 | 82.1% | Positive without best trade |
-| Return ex-Top-3 | 36.7% | Positive without top 3 |
-| Max Single Trade | 19.9% | Largest individual trade return |
-
-## Outcome Analysis
-
-**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
-
-| Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
-|---|---|---|---|---|---|
-| direction_right_profit | 6 | 10.63% | 63.8% | 10.63% | 53.33 |
-| no_signal | 2 | 9.85% | 19.7% | 9.85% | 19.50 |
+| HHI | 0.0960 | Ideal for 17 trades: 0.0588 |
+| Top-1 Trade | 19.9% of gross profit | Moderate concentration |
+| Top-3 Trades | 54.8% of gross profit | ⚠️ Notable concentration |
+| Return ex-Top-1 | 58.9% | Positive without best trade |
+| Return ex-Top-3 | 10.6% | Positive without top 3 |
+| Max Single Trade | 22.7% | Largest individual trade return |
 
 ## Correlation Regime Performance
 
@@ -79,9 +70,9 @@ Performance by the correlation regime at entry time. Regimes are classified from
 
 | Correlation Regime | Count | Avg Return | Total Return | Direction Accuracy | Win Rate | Avg Alpha |
 |---|---|---|---|---|---|---|
-| unknown | 8 | 10.43% | 83.5% | 87.5% | 87.5% | 10.43% |
+| unknown | 17 | 4.52% | 76.9% | 58.8% | 58.8% | 4.52% |
 
-**Best-performing regime:** `unknown` — 8 trades, 83.5% total return, 87.5% win rate.
+**Best-performing regime:** `unknown` — 17 trades, 76.9% total return, 58.8% win rate.
 
 ## The Correlation Flip Effect
 
@@ -91,16 +82,18 @@ For correlation-aware strategies, the trade direction includes a correlation-bas
 
 | Signal Correct | Trade Direction Correct | Count | Avg Return | Total Return |
 |---|---|---|---|---|
-| ❌ | ✅ | 5 | 10.78% | 53.9% |
-| ✅ | ✅ | 1 | 9.88% | 9.9% |
+| ❌ | ❌ | 3 | -7.87% | -23.6% |
+| ❌ | ✅ | 6 | 9.31% | 55.9% |
+| ✅ | ❌ | 2 | -5.57% | -11.1% |
+| ✅ | ✅ | 3 | 12.68% | 38.0% |
 
 ### Flip Trades (Signal Wrong → Direction Right)
 
-**6 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
+**7 trades** where the UCC signal missed the earnings surprise but the correlation flip resulted in a profitable direction.
 
-- Average return: **12.3%**
-- Total return: **73.6%**
-- Average alpha: **12.3%**
+- Average return: **10.8%**
+- Total return: **75.6%**
+- Average alpha: **10.8%**
 
 Note: Whether these flips reflect a durable relationship or in-sample coincidence depends on the stability of the correlation regime across market conditions.
 
@@ -108,7 +101,7 @@ Regime distribution of flip trades:
 
 | Correlation Regime | Count | Avg Return |
 |---|---|---|
-| unknown | 6 | 12.27% |
+| unknown | 7 | 10.80% |
 
 ## Signal Quality Analysis
 
@@ -118,38 +111,48 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 
 | Signal Quality | Count | Avg Return | Total Return | Direction Accuracy | Win Rate |
 |---|---|---|---|---|---|
-| no_data | 8 | 10.43% | 83.5% | 87.5% | 87.5% |
+| no_data | 17 | 4.52% | 76.9% | 58.8% | 58.8% |
 
 ## Long vs Short Performance
 
 | Side | Count | Avg Return | Total Return | Win Rate | Direction Accuracy |
 |---|---|---|---|---|---|
-| LONG | 6 | 11.02% | 66.1% | 83.3% | 83.3% |
-| SHORT | 2 | 8.67% | 17.3% | 100.0% | 100.0% |
+| LONG | 8 | 11.48% | 91.8% | 87.5% | 87.5% |
+| SHORT | 9 | -1.66% | -15.0% | 33.3% | 33.3% |
 
 ## Annual Performance
 
 | Year | Trades | Total Return | Avg Return | Win Rate | Direction Accuracy | Total Alpha |
 |---|---|---|---|---|---|---|
-| 2021 | 2 | 14.1% | 7.03% | 100.0% | 100.0% | 14.1% |
+| 2020 | 1 | -16.1% | -16.08% | 0.0% | 0.0% | -16.1% |
+| 2021 | 3 | 13.1% | 4.38% | 66.7% | 66.7% | 13.1% |
+| 2022 | 4 | -15.8% | -3.94% | 25.0% | 25.0% | -15.8% |
 | 2023 | 2 | 31.2% | 15.59% | 100.0% | 100.0% | 31.2% |
-| 2024 | 2 | 18.5% | 9.26% | 100.0% | 100.0% | 18.5% |
-| 2025 | 1 | 19.7% | 19.75% | 100.0% | 100.0% | 19.7% |
+| 2024 | 4 | 46.7% | 11.67% | 100.0% | 100.0% | 46.7% |
+| 2025 | 2 | 17.8% | 8.89% | 50.0% | 50.0% | 17.8% |
 | 2026 | 1 | -0.1% | -0.05% | 0.0% | 0.0% | -0.1% |
 
 ### Macro Context by Year
 
-**2021** (Strong year: 14.1%, 2 trades)
+**2020** (Losing year: -16.1%, 1 trades)
+- *COVID-19 Crash & Recovery* (bearish): S&P 500 fell ~34% in 23 trading days. Industrial stocks hit harder due to supply chain disruption and demand collapse. DE fell from $180 to $115 before recovering.
 - *Post-COVID Stimulus Rally* (bullish): Unprecedented fiscal and monetary stimulus drove a broad equity rally. Agricultural commodity boom and infrastructure spending expectations boosted DE from ~$130 to ~$390. Strong negative UCC-price correlation period — falling UCC filings while revenues surged.
+
+**2021** (Strong year: 13.1%, 3 trades)
+- *Post-COVID Stimulus Rally* (bullish): Unprecedented fiscal and monetary stimulus drove a broad equity rally. Agricultural commodity boom and infrastructure spending expectations boosted DE from ~$130 to ~$390. Strong negative UCC-price correlation period — falling UCC filings while revenues surged.
+
+**2022** (Losing year: -15.8%, 4 trades)
+- *Fed Tightening Cycle* (volatile): Aggressive rate hikes from 0% to 5.25-5.50%. Growth-sensitive industrials whipsawed as markets repriced duration risk. DE traded in a wide $280-$450 range with sharp reversals.
+- *2022 Bear Market* (bearish): S&P 500 peak-to-trough decline of ~25%. Industrials sold off on recession fears. Weak correlation signals during this period — macro dominated micro.
 
 **2023** (Strong year: 31.2%, 2 trades)
 - *Fed Tightening Cycle* (volatile): Aggressive rate hikes from 0% to 5.25-5.50%. Growth-sensitive industrials whipsawed as markets repriced duration risk. DE traded in a wide $280-$450 range with sharp reversals.
 - *2023 Soft Landing Rally* (bullish): Growing confidence in a soft landing. DE benefited from strong ag cycle and precision agriculture demand. Correlation regimes began shifting as rate expectations stabilized.
 
-**2024** (Strong year: 18.5%, 2 trades)
+**2024** (Strong year: 46.7%, 4 trades)
 - *2024 Election Year Uncertainty* (volatile): Policy uncertainty around tariffs, trade, and fiscal direction created headwinds for export-oriented industrials. DE faced ag cycle downturn concerns.
 
-**2025** (Strong year: 19.7%, 1 trades)
+**2025** (Strong year: 17.8%, 2 trades)
 - *2025 Tariff Escalation* (volatile): New tariff announcements on steel, aluminum, and reciprocal tariffs created fresh uncertainty for industrial supply chains. Regime shifts in correlation structure as market repriced trade exposure.
 - *2025 H2 Recovery* (bullish): Trade deal optimism and rate cut expectations drove industrial recovery. DE recovered on strong order book and precision ag technology demand.
 
@@ -159,48 +162,48 @@ High = strong confidence + strong correlation; Medium = moderate; Low = weak sig
 
 ## Worst Drawdown Period
 
-**Drawdown:** -0.1% cumulative (trade 7 to trade 8)
-**Period:** 2025-12-09 to 2026-02-05 (2 trades)
-**Peak cumulative return:** 83.5% → **Trough:** 83.5%
+**Drawdown:** -17.7% cumulative (trade 5 to trade 8)
+**Period:** 2022-03-14 to 2022-11-11 (4 trades)
+**Peak cumulative return:** -1.0% → **Trough:** -18.7%
 
 **Macro context during drawdown:**
-- *2025 H2 Recovery* (bullish): Trade deal optimism and rate cut expectations drove industrial recovery. DE recovered on strong order book and precision ag technology demand.
+- *Fed Tightening Cycle* (volatile): Aggressive rate hikes from 0% to 5.25-5.50%. Growth-sensitive industrials whipsawed as markets repriced duration risk. DE traded in a wide $280-$450 range with sharp reversals.
+- *2022 Bear Market* (bearish): S&P 500 peak-to-trough decline of ~25%. Industrials sold off on recession fears. Weak correlation signals during this period — macro dominated micro.
 
 **Trades during drawdown:**
 
 | Entry Date | Exit Date | Direction | Trade Return | Correlation Regime | Trade Direction Correct |
 |---|---|---|---|---|---|
-| 2025-12-09 | 2026-02-04 | 1.0000 | 19.75% | unknown | ✅ |
-| 2026-02-05 | 2026-02-06 | 1.0000 | -0.05% | unknown | ❌ |
+| 2022-03-14 | 2022-06-10 | -1.0000 | 1.97% | unknown | ✅ |
+| 2022-09-13 | 2022-10-25 | -1.0000 | -6.60% | unknown | ❌ |
+| 2022-10-26 | 2022-11-10 | -1.0000 | -9.82% | unknown | ❌ |
+| 2022-11-11 | 2022-12-08 | -1.0000 | -1.33% | unknown | ❌ |
 
 ## Holding Period Analysis
 
 | Bucket | Count | Avg Return | Total Return | Win Rate |
 |---|---|---|---|---|
-| 1-5d | 1 | -0.05% | -0.1% | 0.0% |
-| 16-30d | 1 | 8.63% | 8.6% | 100.0% |
-| 31-50d | 1 | 19.75% | 19.7% | 100.0% |
-| 50d+ | 5 | 11.03% | 55.1% | 100.0% |
+| 1-5d | 2 | -1.02% | -2.0% | 0.0% |
+| 16-30d | 5 | -2.47% | -12.3% | 40.0% |
+| 31-50d | 3 | 13.83% | 41.5% | 66.7% |
+| 50d+ | 6 | 9.93% | 59.6% | 100.0% |
+| 6-15d | 1 | -9.82% | -9.8% | 0.0% |
 
 ## Win/Loss Streaks
 
-- **Max consecutive wins:** 7
-- **Max consecutive losses:** 1
+- **Max consecutive wins:** 6
+- **Max consecutive losses:** 3
 
 ## Observations & Caveats
 
-**Sample size:** ⚠️ Only 8 trades — all metrics should be interpreted with caution. This is likely insufficient for reliable inference.
-**Diversification:** Well-distributed. HHI of 0.1697 is near the theoretical minimum of 0.1250 for 8 trades.
-**Win/loss profile:** 87.5% win rate with 1520.19× profit factor — in this sample, winning trades tended to be larger than losing trades. Whether this reflects a durable edge or favorable conditions during the test period warrants further investigation (e.g., out-of-sample testing, different tickers).
-**Signal vs Direction:** Direction accuracy (87.5%) exceeded signal accuracy (25.0%) in this sample, suggesting the correlation flip may have contributed positively. This relationship should be tested across different market regimes.
+**Sample size:** ⚠️ Only 17 trades — all metrics should be interpreted with caution. This is likely insufficient for reliable inference.
+**Diversification:** Moderate concentration. Returns remain positive excluding top 3 trades (10.6%).
+**Win/loss profile:** 58.8% win rate with 3.09× profit factor — in this sample, winning trades tended to be larger than losing trades. Whether this reflects a durable edge or favorable conditions during the test period warrants further investigation (e.g., out-of-sample testing, different tickers).
+**Signal vs Direction:** Signal accuracy (62.5%) exceeded direction accuracy (58.8%), suggesting the correlation flip occasionally inverted a correct signal. Net impact on returns depends on the magnitude of flip-induced losses vs. flip-induced gains.
 
 ### Known Vulnerabilities
 
-
-### ⚠️ Robustness Red Flags
-
-- **FLIP_OVERFITTING:** Signal accuracy is only 25.0% but win rate is 87.5%. The correlation flip mechanism is compensating for poor signal quality. This suggests the flip is overfitting to historical correlation regimes, which may not persist.
-- **SUSPICIOUSLY_PERFECT:** Profit factor of 1520.2 with only 8 trades suggests the strategy may be avoiding losses through exit timing rather than signal skill. These results almost always degrade catastrophically out of sample.
+- **Worst year:** 2020 (-16.1%, 1 trades). Macro: COVID-19 Crash & Recovery, Post-COVID Stimulus Rally
 
 ### General Caveats
 

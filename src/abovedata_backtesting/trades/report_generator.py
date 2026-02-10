@@ -258,20 +258,6 @@ def _compute_regime_performance(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _compute_outcome_breakdown(df: pl.DataFrame) -> pl.DataFrame:
-    return (
-        df.group_by("outcome")
-        .agg(
-            pl.len().alias("count"),
-            pl.col("trade_return").mean().alias("avg_return"),
-            pl.col("trade_return").sum().alias("total_return"),
-            pl.col("alpha_contribution").mean().alias("avg_alpha"),
-            pl.col("holding_days").mean().alias("avg_holding"),
-        )
-        .sort("total_return", descending=True)
-    )
-
-
 def _compute_signal_vs_direction(df: pl.DataFrame) -> pl.DataFrame:
     with_signal = df.filter(pl.col("outcome") != "no_signal")
     return (
@@ -516,7 +502,6 @@ class StrategyReport:
             self._strategy_description(m),
             self._headline_metrics(m),
             self._diversity_assessment(m),
-            self._outcome_analysis(df),
             self._regime_analysis(df),
             self._correlation_flip_analysis(df),
             self._signal_quality_analysis(df),
@@ -668,41 +653,6 @@ class StrategyReport:
             f"| Return ex-Top-3 | {_fmt_pct(ex3)} | {'Positive' if ex3 > 0 else 'Negative'} without top 3 |",
             f"| Max Single Trade | {_fmt_pct(m.get('max_single_contribution'))} | Largest individual trade return |",
         ]
-        return "\n".join(lines)
-
-    def _outcome_analysis(self, df: pl.DataFrame) -> str:
-        outcomes = _compute_outcome_breakdown(df)
-        lines = ["## Outcome Analysis", ""]
-
-        outcome_types = set(outcomes["outcome"].to_list())
-        has_right_loss = "direction_right_loss" in outcome_types
-        has_wrong_profit = "direction_wrong_profit" in outcome_types
-
-        if not has_right_loss and not has_wrong_profit:
-            lines.extend(
-                [
-                    "**No ambiguous outcomes observed in this sample:** Every trade "
-                    "with ground truth either got direction right and profited, or "
-                    "got direction wrong and lost. No cases of direction_right_loss "
-                    "or direction_wrong_profit appeared. This may suggest the exit "
-                    "mechanism is reasonably aligned with direction correctness, "
-                    "though the absence of edge cases could also reflect limited "
-                    "sample size or favorable market conditions during the test period.",
-                    "",
-                ]
-            )
-
-        lines.append(
-            _md_table(
-                outcomes,
-                {
-                    "avg_return": "pct2",
-                    "total_return": "pct",
-                    "avg_alpha": "pct2",
-                    "avg_holding": "f2",
-                },
-            )
-        )
         return "\n".join(lines)
 
     def _regime_analysis(self, df: pl.DataFrame) -> str:

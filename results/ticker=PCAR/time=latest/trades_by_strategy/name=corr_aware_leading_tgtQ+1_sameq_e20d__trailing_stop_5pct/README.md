@@ -70,16 +70,6 @@ Diversification: **Moderately diversified** — some concentration, generally ac
 | Return ex-Top-3 | 39.1% | Positive without top 3 |
 | Max Single Trade | 20.7% | Largest individual trade return |
 
-## Outcome Analysis
-
-**No ambiguous outcomes observed in this sample:** Every trade with ground truth either got direction right and profited, or got direction wrong and lost. No cases of direction_right_loss or direction_wrong_profit appeared. This may suggest the exit mechanism is reasonably aligned with direction correctness, though the absence of edge cases could also reflect limited sample size or favorable market conditions during the test period.
-
-| Outcome | Count | Avg Return | Total Return | Avg Alpha | Avg Holding |
-|---|---|---|---|---|---|
-| direction_right_profit | 17 | 4.76% | 81.0% | 4.76% | 12.65 |
-| no_signal | 9 | 2.31% | 20.8% | 2.31% | 7.22 |
-| direction_wrong_loss | 9 | -2.77% | -24.9% | -2.77% | 7.11 |
-
 ## Correlation Regime Performance
 
 Performance by the correlation regime at entry time. Regimes are classified from the contemporaneous and leading correlation between UCC filings and revenue.
