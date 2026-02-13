@@ -54,6 +54,9 @@ class EntryContext:
     momentum_zscore: float | None = None
     lookback_days: int | None = None
 
+    # Signal preprocessing context
+    preprocessor_name: str | None = None
+
     @property
     def is_correlation_aware(self) -> bool:
         return self.corr_col_used is not None
@@ -102,4 +105,5 @@ ENTRY_CONTEXT_COLUMNS = [
     "entry_regime_shift_skipped",
     "entry_momentum_zscore",
     "entry_lookback_days",
+    "entry_preprocessor_name",
 ]

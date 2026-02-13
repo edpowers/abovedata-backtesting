@@ -23,6 +23,7 @@ from abovedata_backtesting.entries.entry_signals import (
     SignalMomentumEntry,
     SignalThresholdEntry,
 )
+from abovedata_backtesting.entries.multi_horizon_entry import MultiHorizonEntry
 from abovedata_backtesting.exits.exit_strategies import (
     FixedHoldingExit,
     SignalChangeExit,
@@ -32,6 +33,15 @@ from abovedata_backtesting.exits.exit_strategies import (
 from abovedata_backtesting.processors.benchmark_processor import (
     BenchmarkConfig,
     BenchmarkProcessor,
+)
+from abovedata_backtesting.processors.signal_preprocessor import (
+    IdentityPreprocessor,
+    SignalPreprocessor,
+)
+from abovedata_backtesting.processors.signal_transforms import (
+    RateOfChangeTransform,
+    TimeShiftTransform,
+    WeightedBlendTransform,
 )
 from abovedata_backtesting.processors.strategy_processor import (
     GridSearchResult,
@@ -138,6 +148,74 @@ def run_grid_search(
     )
 
     # =========================================================================
+    # Signal preprocessors (transform signals before entry rules)
+    # =========================================================================
+    resid_col = f"{visible_col}_resid"
+
+    preprocessors = [
+        IdentityPreprocessor(),  # baseline: no transforms
+        # Lag-1 and lag-2: use prior quarter's signal
+        *SignalPreprocessor.grid(
+            [
+                TimeShiftTransform.grid(
+                    source_cols=[(resid_col,)],
+                    shift_quarters=[1, 2],
+                ),
+            ]
+        ),
+        # Lag + rate-of-change
+        *SignalPreprocessor.grid(
+            [
+                TimeShiftTransform.grid(
+                    source_cols=[(resid_col,)],
+                    shift_quarters=[1],
+                ),
+                RateOfChangeTransform.grid(
+                    source_col=[resid_col],
+                    lookback_quarters=[1],
+                ),
+            ]
+        ),
+        # Blend current + lagged
+        *SignalPreprocessor.grid(
+            [
+                TimeShiftTransform.grid(
+                    source_cols=[(resid_col,)],
+                    shift_quarters=[1],
+                ),
+                WeightedBlendTransform.grid(
+                    col_a=[resid_col],
+                    col_b=[f"{resid_col}_lag1q"],
+                    weight_a=[0.7, 0.5, 0.3],
+                ),
+            ]
+        ),
+    ]
+    processor.add_preprocessors(preprocessors)
+
+    # =========================================================================
+    # Multi-horizon entries (examine T, T-1, T-2 simultaneously)
+    # =========================================================================
+    multi_horizon = MultiHorizonEntry.grid(
+        signal_col=[resid_col],
+        horizons=[(0, 1), (0, 1, 2)],
+        strategy=["consensus", "momentum", "reversal"],
+        min_signal_abs=[0.0, 0.1],
+        corr_col=["contemp", None],
+        entry_days_before=entry_days_before,
+    )
+
+    # Correlation-aware entries targeting lagged signals
+    corr_aware_lagged = CorrelationAwareEntry.grid(
+        signal_col=[f"{resid_col}_lag1q"],
+        corr_col=["contemp", "leading"],
+        min_signal_abs=[0.0, 0.1],
+        min_confidence=[0.0, 0.3],
+        skip_regime_shifts=[True],
+        entry_days_before=entry_days_before,
+    )
+
+    # =========================================================================
     # Add entries to processor
     # =========================================================================
 
@@ -152,6 +230,11 @@ def run_grid_search(
     processor.add_entries(base_divergence)
 
     processor.add_entries(corr_aware)
+
+    # Multi-horizon and lagged entries
+    processor.add_entries(multi_horizon)
+    processor.add_entries(corr_aware_lagged)
+
     processor.add_position_filters(["long_short", "long_only"])
 
     # =========================================================================

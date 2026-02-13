@@ -230,6 +230,7 @@ def _context_to_row(ctx: EntryContext) -> dict[str, Any]:
         "entry_regime_shift_skipped": ctx.regime_shift_skipped,
         "entry_momentum_zscore": ctx.momentum_zscore,
         "entry_lookback_days": ctx.lookback_days,
+        "entry_preprocessor_name": ctx.preprocessor_name,
     }
 
 
