@@ -76,6 +76,82 @@ class TradeLog:
     trades: list[Trade]
 
     @classmethod
+    def from_arrays(
+        cls,
+        positions: NDArray[np.float64],
+        dates: list[Any],
+        closes: NDArray[np.float64],
+        strengths: NDArray[np.float64],
+        confs: NDArray[np.float64],
+    ) -> TradeLog:
+        """Build trade log from pre-extracted numpy arrays (fast path).
+
+        Skips Polars extraction overhead. No EntryContext support (not needed
+        during grid search ranking — contexts are read only for top-N results).
+        """
+        if len(positions) == 0:
+            return cls(trades=[])
+
+        prev_positions = np.empty_like(positions)
+        prev_positions[0] = 0.0
+        prev_positions[1:] = positions[:-1]
+
+        active = np.abs(positions) > 0.01
+        prev_active = np.abs(prev_positions) > 0.01
+        direction = np.sign(positions)
+        prev_direction = np.sign(prev_positions)
+        direction_changed = direction != prev_direction
+
+        entries_mask = active & (~prev_active | (prev_active & direction_changed))
+        exits_mask = prev_active & (~active | (active & direction_changed))
+
+        entry_indices = np.flatnonzero(entries_mask)
+        exit_indices = np.flatnonzero(exits_mask)
+
+        if len(entry_indices) == 0:
+            return cls(trades=[])
+
+        n_rows = len(dates)
+        trades: list[Trade] = []
+        exit_ptr = 0
+
+        for entry_idx in entry_indices:
+            entry_idx = int(entry_idx)
+            while exit_ptr < len(exit_indices) and exit_indices[exit_ptr] <= entry_idx:
+                exit_ptr += 1
+
+            if exit_ptr < len(exit_indices):
+                exit_idx = int(exit_indices[exit_ptr])
+            else:
+                exit_idx = n_rows - 1
+
+            entry_price = float(closes[entry_idx])
+            exit_price = float(closes[exit_idx])
+            trade_dir = float(direction[entry_idx])
+            holding = max(exit_idx - entry_idx, 1)
+            trade_return = (exit_price / entry_price - 1) * trade_dir
+
+            s = float(strengths[entry_idx])
+            c = float(confs[entry_idx])
+
+            trades.append(
+                Trade(
+                    entry_date=dates[entry_idx],
+                    exit_date=dates[exit_idx],
+                    direction=trade_dir,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    holding_days=holding,
+                    trade_return=trade_return,
+                    signal_strength=s if s == s else 0.0,
+                    confidence=c if c == c else 0.0,
+                    entry_context=None,
+                )
+            )
+
+        return cls(trades=trades)
+
+    @classmethod
     def from_daily(cls, daily: pl.DataFrame) -> TradeLog:
         """
         Build trade log from daily DataFrame with positions.

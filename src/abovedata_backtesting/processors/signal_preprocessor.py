@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from typing import Any, Self
+from typing import Any, Self, Sequence
 
 import polars as pl
 
-from abovedata_backtesting.processors.signal_transforms import SignalTransform
+from abovedata_backtesting.processors.signal_transforms import (
+    SignalTransform,
+)
 
 
 class IdentityPreprocessor:
@@ -96,7 +98,7 @@ class SignalPreprocessor:
         return signals
 
     @classmethod
-    def grid(cls, transform_lists: list[list[SignalTransform]]) -> list[Self]:
+    def grid(cls, transform_lists: list[Sequence[SignalTransform]]) -> list[Self]:
         """Generate grid from lists of transform variations.
 
         Each element of transform_lists is a list of alternatives for that

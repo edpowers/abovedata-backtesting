@@ -1,22 +1,47 @@
-"""Strategy processor for grid search optimization over entry × exit combinations."""
+"""Strategy processor for grid search optimization over entry × exit combinations.
+
+Two-phase architecture for scalability to 100K+ permutations:
+  Phase 1: Build entry cache — one entry.apply() per unique (preprocessor, entry, pos_filter).
+  Phase 2: Apply exits — Cython-accelerated exit kernels over cached entry DataFrames.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
+import os
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from itertools import product as itertools_product
 from typing import Any, Literal
 
+import numpy as np
 import polars as pl
-from tqdm.contrib.itertools import product
+from numpy.typing import NDArray
+from tqdm import tqdm
 from typing_extensions import Self
 
 from abovedata_backtesting.benchmarks.benchmark_results import (
     BenchmarkResults,
 )
 from abovedata_backtesting.data_loaders.load_market_data import MarketDataLoader
-from abovedata_backtesting.entries.entry_signals import EntryRule, enforce_max_entries
-from abovedata_backtesting.exits.exit_strategies import ExitRule, SignalChangeExit
+from abovedata_backtesting.entries.entry_signals import (
+    EntryRule,
+    enforce_max_entries_fast,
+)
+from abovedata_backtesting.exits.cython_exits import (
+    enforce_max_entries_cy,
+    fixed_holding_exit_cy,
+    stop_loss_take_profit_exit_cy,
+    trailing_stop_exit_cy,
+)
+from abovedata_backtesting.exits.exit_strategies import (
+    ExitRule,
+    FixedHoldingExit,
+    SignalChangeExit,
+    StopLossTakeProfitExit,
+    TrailingStopExit,
+)
 from abovedata_backtesting.model.metrics import BacktestMetrics
 from abovedata_backtesting.processors.signal_preprocessor import (
     IdentityPreprocessor,
@@ -25,6 +50,75 @@ from abovedata_backtesting.processors.signal_preprocessor import (
 from abovedata_backtesting.trades.trade_log import TradeLog
 
 Preprocessor = SignalPreprocessor | IdentityPreprocessor
+
+
+@dataclass(slots=True)
+class _CachedArrays:
+    """Pre-extracted numpy arrays from a daily DataFrame for fast exit evaluation."""
+
+    positions: NDArray[np.float64]
+    closes: NDArray[np.float64]
+    highs: NDArray[np.float64]
+    lows: NDArray[np.float64]
+    asset_returns: NDArray[np.float64]
+    benchmark_returns: NDArray[np.float64]
+    signal_ids: NDArray[np.int32]
+    strengths: NDArray[np.float64]
+    confs: NDArray[np.float64]
+    dates: list[dt.date]
+    signal_date_mask: NDArray[np.uint8]
+
+    @classmethod
+    def from_daily(
+        cls,
+        daily: pl.DataFrame,
+        signal_dates: frozenset[dt.date] | None = None,
+    ) -> _CachedArrays:
+        """Extract all arrays from a daily DataFrame once."""
+        dates = daily["date"].to_list()
+
+        signal_mask = np.zeros(len(dates), dtype=np.uint8)
+        if signal_dates:
+            for i, d in enumerate(dates):
+                if d in signal_dates:
+                    signal_mask[i] = 1
+
+        return cls(
+            positions=np.array(
+                daily["position"].to_numpy(), dtype=np.float64, copy=True
+            ),
+            closes=np.array(daily["close"].to_numpy(), dtype=np.float64, copy=True),
+            highs=np.array(daily["high"].to_numpy(), dtype=np.float64, copy=True),
+            lows=np.array(daily["low"].to_numpy(), dtype=np.float64, copy=True),
+            asset_returns=np.array(
+                daily["asset_return"].to_numpy(), dtype=np.float64, copy=True
+            ),
+            benchmark_returns=np.array(
+                daily["benchmark_return"].to_numpy(), dtype=np.float64, copy=True
+            ),
+            signal_ids=(
+                np.array(daily["signal_id"].to_numpy(), dtype=np.int32, copy=True)
+                if "signal_id" in daily.columns
+                else np.zeros(daily.height, dtype=np.int32)
+            ),
+            strengths=(
+                np.array(
+                    daily["signal_strength"].to_numpy(),
+                    dtype=np.float64,
+                    copy=True,
+                )
+                if "signal_strength" in daily.columns
+                else np.zeros(daily.height, dtype=np.float64)
+            ),
+            confs=(
+                np.array(daily["confidence"].to_numpy(), dtype=np.float64, copy=True)
+                if "confidence" in daily.columns
+                else np.zeros(daily.height, dtype=np.float64)
+            ),
+            dates=dates,
+            signal_date_mask=signal_mask,
+        )
+
 
 # =============================================================================
 # Position Filter
@@ -108,7 +202,7 @@ class GridSearchResult:
     position_filter: PositionFilter
     metrics: BacktestMetrics
     trade_log: TradeLog
-    daily_df: pl.DataFrame
+    daily_df: pl.DataFrame | None
     entry_params: dict[str, Any]
     exit_params: dict[str, Any]
     sanity: SanityFlags
@@ -264,46 +358,176 @@ class StrategyProcessor:
         self,
         optimize_by: str = "sharpe_ratio",
     ) -> tuple[pl.DataFrame, list[GridSearchResult]]:
-        """Run full cartesian product of preprocessor × entry × exit rules."""
+        """Run full cartesian product of preprocessor × entry × exit rules.
+
+        Two-phase architecture for performance:
+          Phase 1: Build entry cache — one entry.apply() per unique
+                   (preprocessor, entry_rule, position_filter) triple.
+          Phase 2: Apply all (exit_rule, max_entries) variants to each
+                   cached entry result using Cython-accelerated exit kernels.
+        """
         self._load_data()
         self._set_defaults()
 
         results: list[GridSearchResult] = []
 
-        # Cache preprocessed signals to avoid redundant computation
+        # ── Phase 1: Build entry cache (parallel) ────────────────────
+        # Preprocessors run sequentially (few, fast, may share state),
+        # then entry.apply() calls run in parallel via ThreadPoolExecutor.
+        # Polars releases the GIL during C-level operations, so threads
+        # give real parallelism without serialization overhead.
         preprocessed_cache: dict[str, pl.DataFrame] = {}
+        # Key: (pp_name, entry_name, pos_filter) → (daily_df, entry, preprocessor)
+        entry_cache: dict[
+            tuple[str, str, PositionFilter],
+            tuple[pl.DataFrame, EntryRule, Preprocessor],
+        ] = {}
 
-        combos = product(
+        # Pre-compute preprocessor outputs (few, fast — no parallelism needed)
+        for pp in self._preprocessors:
+            if pp.name not in preprocessed_cache:
+                preprocessed_cache[pp.name] = pp.apply(self.signals.clone())
+
+        # Deduplicate entry combos
+        entry_combos: list[tuple[str, EntryRule, PositionFilter, Preprocessor]] = []
+        seen_keys: set[tuple[str, str, PositionFilter]] = set()
+        for preprocessor, entry, pos_filter in itertools_product(
             self._preprocessors,
             self._entry_rules,
-            self._exit_rules,
             self._position_filters,
-            self.max_entries_per_signal,
+        ):
+            cache_key = (preprocessor.name, entry.name, pos_filter)
+            if cache_key not in seen_keys:
+                seen_keys.add(cache_key)
+                entry_combos.append(
+                    (preprocessor.name, entry, pos_filter, preprocessor)
+                )
+
+        n_workers = min(os.cpu_count() or 4, len(entry_combos))
+
+        def _compute_entry(
+            pp_name: str,
+            entry: EntryRule,
+            pos_filter: PositionFilter,
+        ) -> tuple[
+            tuple[str, str, PositionFilter],
+            pl.DataFrame | None,
+        ]:
+            pp_signals = preprocessed_cache[pp_name]
+            daily = entry.apply(self._market_data.clone(), pp_signals)
+            if "position" not in daily.columns:
+                return (pp_name, entry.name, pos_filter), None
+            daily = self._apply_position_filter(daily, pos_filter)
+            return (pp_name, entry.name, pos_filter), daily
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(_compute_entry, pp_name, entry, pos_filter): (
+                    pp_name,
+                    entry,
+                    pos_filter,
+                    preprocessor,
+                )
+                for pp_name, entry, pos_filter, preprocessor in entry_combos
+            }
+            with tqdm(
+                total=len(futures),
+                desc=f"Building entry cache ({n_workers} threads)",
+                disable=not self.debug,
+            ) as pbar:
+                for future in as_completed(futures):
+                    pp_name, entry, pos_filter, preprocessor = futures[future]
+                    cache_key, daily = future.result()
+                    if daily is not None:
+                        entry_cache[cache_key] = (daily, entry, preprocessor)
+                    pbar.update(1)
+
+        # ── Phase 2: Apply exits to cached entries ───────────────────
+        # Collect signal_dates from FixedHoldingExit rules for cache extraction
+        signal_dates: frozenset[dt.date] | None = None
+        for er in self._exit_rules:
+            if isinstance(er, FixedHoldingExit) and er.signal_dates:
+                signal_dates = er.signal_dates
+                break
+
+        total_combos = (
+            len(entry_cache) * len(self._exit_rules) * len(self.max_entries_per_signal)
         )
 
-        for preprocessor, entry, exit_rule, pos_filter, max_entries in combos:
-            pp_key = preprocessor.name
-            if pp_key not in preprocessed_cache:
-                preprocessed_cache[pp_key] = preprocessor.apply(
-                    self.signals.clone(),
-                )
-            preprocessed_signals = preprocessed_cache[pp_key]
-
-            if result := self._evaluate_combination(
-                entry,
-                exit_rule,
+        with tqdm(
+            total=total_combos, desc="Evaluating exits", disable=not self.debug
+        ) as pbar:
+            for (
+                _pp_name,
+                _entry_name,
                 pos_filter,
-                max_entries,
-                preprocessed_signals,
-                preprocessor,
-            ):
-                results.append(result)
+            ), (base_daily, entry, preprocessor) in entry_cache.items():
+                # Pre-extract arrays once per entry cache key
+                arrays = _CachedArrays.from_daily(base_daily, signal_dates)
+
+                for exit_rule in self._exit_rules:
+                    for max_entries in self.max_entries_per_signal:
+                        pbar.update(1)
+                        if result := self._evaluate_arrays(
+                            arrays,
+                            base_daily,
+                            entry,
+                            exit_rule,
+                            pos_filter,
+                            max_entries,
+                            preprocessor,
+                        ):
+                            results.append(result)
 
         summary_df = self._build_summary(results, optimize_by)
 
-        return summary_df.drop("_original_idx"), [
-            results[i] for i in summary_df["_original_idx"].to_list()
-        ]
+        # ── Phase 3: Reconstruct daily_df for top results ────────────
+        # Rebuild DataFrames only for results that need them (robustness
+        # tests, reports). The rest stay as daily_df=None for memory.
+        sorted_results = [results[i] for i in summary_df["_original_idx"].to_list()]
+        self._rebuild_daily_df(sorted_results, entry_cache)
+
+        return summary_df.drop("_original_idx"), sorted_results
+
+    @staticmethod
+    def _rebuild_daily_df(
+        sorted_results: list[GridSearchResult],
+        entry_cache: dict[
+            tuple[str, str, PositionFilter],
+            tuple[pl.DataFrame, EntryRule, Preprocessor],
+        ],
+        max_rebuild: int = 50,
+    ) -> None:
+        """Reconstruct daily_df for the top results that need it.
+
+        Only rebuilds up to `max_rebuild` results to avoid O(N) overhead
+        when N is large. Downstream analysis (robustness tests, reports)
+        typically uses only the top 5-10 results.
+        """
+        rebuilt = 0
+        for result in sorted_results:
+            if rebuilt >= max_rebuild:
+                break
+            if result.daily_df is not None:
+                rebuilt += 1
+                continue
+            cache_key = (
+                result.preprocessor_name,
+                result.entry_rule.name,
+                result.position_filter,
+            )
+            if cache_key not in entry_cache:
+                continue
+            base_daily = entry_cache[cache_key][0]
+            daily = result.exit_rule.apply_fast(base_daily)
+            daily = enforce_max_entries_fast(
+                daily,
+                max_entries_per_signal=result.max_entries_per_signal,
+            )
+            result.daily_df = daily.with_columns(
+                (pl.col("asset_return") * pl.col("position")).alias("strategy_return"),
+            )
+            rebuilt += 1
 
     # ── Internal ─────────────────────────────────────────────────────────
 
@@ -357,52 +581,109 @@ class StrategyProcessor:
         if not self._preprocessors:
             self._preprocessors = [IdentityPreprocessor()]
 
-    def _evaluate_combination(
+    def _evaluate_arrays(
         self,
+        arrays: _CachedArrays,
+        base_daily: pl.DataFrame,
         entry: EntryRule,
         exit_rule: ExitRule,
         pos_filter: PositionFilter,
         max_entries: int,
-        signals: pl.DataFrame | None = None,
         preprocessor: Preprocessor | None = None,
     ) -> GridSearchResult | None:
-        """Run one entry × exit × position_filter combination and compute metrics."""
-        assert self._market_data is not None
+        """Evaluate one exit variant using pre-extracted numpy arrays.
 
-        effective_signals = signals if signals is not None else self.signals
+        Operates entirely on numpy arrays, bypassing Polars overhead for
+        exit application, strategy return computation, trade log building,
+        and metrics calculation.
+        """
+        positions = arrays.positions
 
-        # 1. Entry rule computes positions (sparse, on signal-derived dates)
-        daily = entry.apply(self._market_data.clone(), effective_signals)
+        # 3. Apply exit rule directly on numpy arrays
+        exit_prices: NDArray[np.float64] | None = None
+        if isinstance(exit_rule, SignalChangeExit):
+            new_pos = positions
+        elif isinstance(exit_rule, FixedHoldingExit):
+            new_pos = fixed_holding_exit_cy(
+                positions, arrays.signal_date_mask, exit_rule.holding_days
+            )
+        elif isinstance(exit_rule, TrailingStopExit):
+            new_pos, exit_prices = trailing_stop_exit_cy(
+                positions,
+                arrays.closes,
+                arrays.highs,
+                arrays.lows,
+                exit_rule.trailing_stop_pct,
+            )
+        elif isinstance(exit_rule, StopLossTakeProfitExit):
+            new_pos, exit_prices = stop_loss_take_profit_exit_cy(
+                positions,
+                arrays.closes,
+                arrays.highs,
+                arrays.lows,
+                exit_rule.stop_loss_pct,
+                exit_rule.take_profit_pct,
+            )
+        else:
+            # Fallback for unknown exit types
+            daily = exit_rule.apply_fast(base_daily)
+            daily = enforce_max_entries_fast(daily, max_entries_per_signal=max_entries)
+            daily = daily.with_columns(
+                (pl.col("asset_return") * pl.col("position")).alias("strategy_return"),
+            )
+            trade_log = TradeLog.from_daily(daily)
+            if trade_log.n_trades == 0:
+                return None
+            metrics = BacktestMetrics.from_dataframe(
+                daily, benchmark_ticker=self.benchmark_ticker
+            )
+            sanity = SanityFlags.from_result(
+                metrics, trade_log.n_trades, self.sanity_config
+            )
+            pp_name = preprocessor.name if preprocessor is not None else "identity"
+            pp_params = preprocessor.params() if preprocessor is not None else {}
+            return GridSearchResult(
+                entry_rule=entry,
+                exit_rule=exit_rule,
+                position_filter=pos_filter,
+                metrics=metrics,
+                trade_log=trade_log,
+                daily_df=daily,
+                entry_params=entry.params(),
+                exit_params={"exit_type": exit_rule.name},
+                sanity=sanity,
+                max_entries_per_signal=max_entries,
+                preprocessor_name=pp_name,
+                preprocessor_params=pp_params,
+            )
 
-        if "position" not in daily.columns:
-            return None
+        # 4. Enforce max entries
+        new_pos = enforce_max_entries_cy(new_pos, arrays.signal_ids, max_entries)
 
-        # 2. Apply position filter (long_only, short_only, or long_short)
-        daily = self._apply_position_filter(daily, pos_filter)
+        # 5. Strategy return = asset_return * position (numpy multiply)
+        strategy_returns = arrays.asset_returns * new_pos
 
-        # 3. Exit rule modifies positions (trims holding periods)
-        daily = exit_rule.apply(daily)
-
-        daily = enforce_max_entries(
-            daily,
-            max_entries_per_signal=max_entries,
+        # 6. Build trade log from arrays (fast path, no Polars)
+        # Use exit_prices for close if available (stop/trailing exits)
+        trade_closes = exit_prices if exit_prices is not None else arrays.closes
+        trade_log = TradeLog.from_arrays(
+            new_pos, arrays.dates, trade_closes, arrays.strengths, arrays.confs
         )
-
-        # 4. Compute daily returns
-        daily = daily.with_columns(
-            (pl.col("asset_return") * pl.col("position")).alias("strategy_return"),
-        )
-
-        # 5. Build trade log
-        trade_log = TradeLog.from_daily(daily)
 
         if trade_log.n_trades == 0:
             return None
 
-        # 7. Compute metrics
-        metrics = BacktestMetrics.from_dataframe(
-            daily, benchmark_ticker=self.benchmark_ticker
+        # 7. Compute metrics from numpy arrays directly (skip Polars conversion)
+        metrics = BacktestMetrics.from_daily(
+            strategy_returns=strategy_returns,
+            asset_returns=arrays.asset_returns,
+            benchmark_returns=arrays.benchmark_returns,
+            positions=new_pos,
+            start_date=arrays.dates[0] if arrays.dates else None,
+            end_date=arrays.dates[-1] if arrays.dates else None,
+            benchmark_ticker=self.benchmark_ticker,
         )
+
         # 8. Sanity check
         sanity = SanityFlags.from_result(
             metrics, trade_log.n_trades, self.sanity_config
@@ -417,7 +698,7 @@ class StrategyProcessor:
             position_filter=pos_filter,
             metrics=metrics,
             trade_log=trade_log,
-            daily_df=daily,
+            daily_df=None,  # Defer DataFrame construction to top-N only
             entry_params=entry.params(),
             exit_params={"exit_type": exit_rule.name},
             sanity=sanity,

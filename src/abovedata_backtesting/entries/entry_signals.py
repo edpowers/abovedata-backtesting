@@ -6,12 +6,25 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Any, Self
 
+import numpy as np
 import polars as pl
 
 from abovedata_backtesting.entries.entry_context import (
     ENTRY_CONTEXT_COLUMNS,
     EntryContext,
 )
+
+
+def _short_signal_col(col: str) -> str:
+    """Shorten a signal column name for use in strategy names."""
+    return (
+        col.replace("visible_revenue_resid", "vrResid")
+        .replace("total_universe_resid", "univResid")
+        .replace("total_revenue_resid", "trevResid")
+        .replace("visible_count_resid", "vcntResid")
+        .replace("consensus_resid", "consResid")
+        .replace("_resid", "Resid")
+    )
 
 
 class EntryRule(ABC):
@@ -207,6 +220,24 @@ def enforce_max_entries(
 
     return daily.with_columns(
         pl.Series("position", positions, dtype=pl.Float64),
+    )
+
+
+def enforce_max_entries_fast(
+    daily: pl.DataFrame,
+    max_entries_per_signal: int = 1,
+) -> pl.DataFrame:
+    """Cython-accelerated version of enforce_max_entries."""
+    if "signal_id" not in daily.columns or "position" not in daily.columns:
+        return daily
+
+    from abovedata_backtesting.exits.cython_exits import enforce_max_entries_cy
+
+    positions = daily["position"].to_numpy(allow_copy=True)
+    signal_ids = daily["signal_id"].to_numpy(allow_copy=True).astype(np.int32)
+    new_pos = enforce_max_entries_cy(positions, signal_ids, max_entries_per_signal)
+    return daily.with_columns(
+        pl.Series("position", new_pos, dtype=pl.Float64),
     )
 
 
@@ -502,8 +533,9 @@ class DivergenceEntry(EntryRule):
     @property
     def name(self) -> str:
         strength = "strong" if self.require_strong_divergence else "any"
+        col = _short_signal_col(self.signal_col)
         return (
-            f"divergence_lb{self.lookback_days}_dz{self.divergence_zscore}"
+            f"divergence_{col}_lb{self.lookback_days}_dz{self.divergence_zscore}"
             f"_ft{self.fundamental_threshold}_{strength}_e{self.entry_days_before}d"
         )
 
@@ -659,8 +691,9 @@ class SignalMomentumEntry(EntryRule):
 
     @property
     def name(self) -> str:
+        col = _short_signal_col(self.signal_col)
         return (
-            f"confirm_st{self.signal_threshold}_mz{self.momentum_zscore_threshold}"
+            f"confirm_{col}_st{self.signal_threshold}_mz{self.momentum_zscore_threshold}"
             f"_lb{self.lookback_days}_e{self.entry_days_before}d"
         )
 

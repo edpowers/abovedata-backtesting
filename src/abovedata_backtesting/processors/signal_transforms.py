@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import product
-from typing import Any, Self
+from typing import Any, Self, Sequence
 
 import polars as pl
 
@@ -43,7 +43,7 @@ class SignalTransform(ABC):
 
     @classmethod
     @abstractmethod
-    def grid(cls, **param_lists: list[Any]) -> list[Self]:
+    def grid(cls, **param_lists: list[Any]) -> Sequence[Self]:
         """Generate cartesian product of parameter variations."""
         ...
 

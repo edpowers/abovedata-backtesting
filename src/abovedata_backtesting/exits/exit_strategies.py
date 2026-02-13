@@ -12,6 +12,7 @@ import datetime as dt
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import numpy as np
 import polars as pl
 
 
@@ -42,6 +43,10 @@ class ExitRule(ABC):
         pl.DataFrame
             Same DataFrame with position column modified by exit logic.
         """
+
+    def apply_fast(self, daily: pl.DataFrame) -> pl.DataFrame:
+        """Cython-accelerated exit logic. Falls back to apply() by default."""
+        return self.apply(daily)
 
     @property
     @abstractmethod
@@ -115,6 +120,17 @@ class FixedHoldingExit(ExitRule):
                 in_position, days_held = False, 0
 
         return daily.with_columns(pl.Series("position", new_positions))
+
+    def apply_fast(self, daily: pl.DataFrame) -> pl.DataFrame:
+        from abovedata_backtesting.exits.cython_exits import fixed_holding_exit_cy
+
+        positions = daily["position"].to_numpy(allow_copy=True)
+        dates = daily["date"].to_list()
+        signal_mask = np.array(
+            [1 if d in self.signal_dates else 0 for d in dates], dtype=np.uint8
+        )
+        new_pos = fixed_holding_exit_cy(positions, signal_mask, self.holding_days)
+        return daily.with_columns(pl.Series("position", new_pos))
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +267,23 @@ class StopLossTakeProfitExit(ExitRule):
             pl.Series("exit_price", exit_prices),
         )
 
+    def apply_fast(self, daily: pl.DataFrame) -> pl.DataFrame:
+        from abovedata_backtesting.exits.cython_exits import (
+            stop_loss_take_profit_exit_cy,
+        )
+
+        positions = daily["position"].to_numpy(allow_copy=True)
+        closes = daily["close"].to_numpy(allow_copy=True)
+        highs = daily["high"].to_numpy(allow_copy=True)
+        lows = daily["low"].to_numpy(allow_copy=True)
+        new_pos, exit_prices = stop_loss_take_profit_exit_cy(
+            positions, closes, highs, lows, self.stop_loss_pct, self.take_profit_pct
+        )
+        return daily.with_columns(
+            pl.Series("position", new_pos),
+            pl.Series("exit_price", exit_prices),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TrailingStopExit(ExitRule):
@@ -335,5 +368,20 @@ class TrailingStopExit(ExitRule):
 
         return daily.with_columns(
             pl.Series("position", new_positions),
+            pl.Series("exit_price", exit_prices),
+        )
+
+    def apply_fast(self, daily: pl.DataFrame) -> pl.DataFrame:
+        from abovedata_backtesting.exits.cython_exits import trailing_stop_exit_cy
+
+        positions = daily["position"].to_numpy(allow_copy=True)
+        closes = daily["close"].to_numpy(allow_copy=True)
+        highs = daily["high"].to_numpy(allow_copy=True)
+        lows = daily["low"].to_numpy(allow_copy=True)
+        new_pos, exit_prices = trailing_stop_exit_cy(
+            positions, closes, highs, lows, self.trailing_stop_pct
+        )
+        return daily.with_columns(
+            pl.Series("position", new_pos),
             pl.Series("exit_price", exit_prices),
         )

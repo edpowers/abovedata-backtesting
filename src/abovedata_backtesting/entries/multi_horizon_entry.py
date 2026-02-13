@@ -19,6 +19,7 @@ from abovedata_backtesting.entries.entry_signals import (
     EntryRule,
     _apply_entry_positions,
     _resolve_entry_dates,
+    _short_signal_col,
 )
 
 MultiHorizonStrategy = Literal["consensus", "momentum", "reversal", "weighted"]
@@ -67,7 +68,8 @@ class MultiHorizonEntry(EntryRule):
     @property
     def name(self) -> str:
         h = "h" + "_".join(str(h) for h in self.horizons)
-        parts = [f"multi_{self.strategy}_{h}"]
+        col = _short_signal_col(self.signal_col)
+        parts = [f"multi_{self.strategy}_{h}_{col}"]
         if self.min_signal_abs > 0:
             parts.append(f"min{self.min_signal_abs}")
         if self.corr_col:

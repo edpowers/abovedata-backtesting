@@ -7,6 +7,9 @@ Compares three entry approaches:
 
 Uses raw STL output with contemp_corr_historical, leading_corr_historical,
 confidence scores, and regime shift detection.
+
+Sweeps all available visible_col variants (total_universe, visible_revenue,
+visible_count) to find which signal source yields the best performance.
 """
 
 import argparse
@@ -15,7 +18,10 @@ from datetime import date
 import polars as pl
 from IPython.display import display
 
-from abovedata_backtesting.data_loaders.load_signal_data import load_signal_data
+from abovedata_backtesting.data_loaders.load_signal_data import (
+    list_visible_cols,
+    load_signal_data,
+)
 from abovedata_backtesting.entries.correlation_aware_entry import CorrelationAwareEntry
 from abovedata_backtesting.entries.entry_signals import (
     DivergenceEntry,
@@ -57,6 +63,7 @@ from abovedata_backtesting.trades.trade_save_results import save_results
 
 def run_grid_search(
     ticker: str,
+    visible_col: str,
     signal_method: str = "stl_p4_s7_robustTrue",
     start_date: date | None = date(2018, 1, 1),
     end_date: date | None = None,
@@ -65,19 +72,21 @@ def run_grid_search(
     """
     Run grid search with correlation-gated entry rules.
 
-    Uses raw STL processor output (not df_fc_joined) so we have access
-    to contemp_corr_historical, leading_corr_historical, regime shifts, etc.
+    Uses raw STL processor output from the visible_col-specific parquet file
+    so we have access to contemp_corr_historical, leading_corr_historical,
+    regime shifts, etc. — all recomputed against the given visible_col.
     """
-    # Load RAW STL processor output (not the joined/renamed version)
-    signals = load_signal_data(ticker, method=signal_method, name="processed_data")
+    signals = load_signal_data(
+        ticker, method=signal_method, name="processed_data", visible_col=visible_col
+    )
 
-    visible_col = None
-    for visible_col in ["visible_revenue", "total_universe"]:
-        if visible_col in signals:
-            break
-
-    if not visible_col:
-        raise ValueError("need a valid visible col")
+    resid_col = f"{visible_col}_resid"
+    if resid_col not in signals.columns:
+        raise ValueError(
+            f"Expected column '{resid_col}' not found in "
+            f"visible_col={visible_col} data. "
+            f"Available columns: {signals.columns}"
+        )
 
     bm_config = BenchmarkConfig.for_ticker(ticker, signal_col=visible_col)
     benchmarks = BenchmarkProcessor(bm_config).run()
@@ -98,7 +107,6 @@ def run_grid_search(
     # Define base entry rules
     # =========================================================================
     # THESE ARE TRADING DAYS, NOT CALENDAR DAYS.
-    # entry_days_before = [0, 1, 5, 15, 20, 30]
     entry_days_before = [5, 15, 20, 30]
 
     base_momentum = MomentumEntry.grid(
@@ -108,7 +116,7 @@ def run_grid_search(
     )
 
     base_signal = SignalThresholdEntry.grid(
-        signal_col=[f"{visible_col}_resid"],
+        signal_col=[resid_col],
         long_threshold=[0.3, 0.5, 1.0],
         short_threshold=[-0.3, -0.5, -1.0],
         entry_days_before=entry_days_before,
@@ -116,7 +124,7 @@ def run_grid_search(
     )
 
     base_confirm = SignalMomentumEntry.grid(
-        signal_col=[f"{visible_col}_resid"],
+        signal_col=[resid_col],
         signal_threshold=[0.0, 0.3, 0.5],
         lookback_days=[10, 20],
         momentum_zscore_threshold=[0.3, 0.5],
@@ -124,7 +132,7 @@ def run_grid_search(
     )
 
     base_divergence = DivergenceEntry.grid(
-        signal_col=[f"{visible_col}_resid"],
+        signal_col=[resid_col],
         lookback_days=[5, 10, 20, 30],
         divergence_zscore=[0.5, 1.0],
         fundamental_threshold=[0.0, 0.5, 1.0],
@@ -137,7 +145,7 @@ def run_grid_search(
     # =========================================================================
 
     corr_aware = CorrelationAwareEntry.grid(
-        signal_col=[f"{visible_col}_resid"],
+        signal_col=[resid_col],
         corr_col=["contemp", "leading"],
         min_signal_abs=[0.0, 0.1],
         min_confidence=[0.0, 0.3, 0.4],
@@ -151,7 +159,6 @@ def run_grid_search(
     # =========================================================================
     # Signal preprocessors (transform signals before entry rules)
     # =========================================================================
-    resid_col = f"{visible_col}_resid"
 
     preprocessors = [
         IdentityPreprocessor(),  # baseline: no transforms
@@ -209,10 +216,10 @@ def run_grid_search(
     # Correlation-aware entries targeting lagged signals
     corr_aware_lagged = CorrelationAwareEntry.grid(
         signal_col=[f"{resid_col}_lag1q"],
-        corr_col=["contemp", "leading"],
+        corr_col=["contemp", "leading", "contemp_ma", "leading_ma"],
         min_signal_abs=[0.0, 0.1],
         min_confidence=[0.0, 0.3],
-        skip_regime_shifts=[True],
+        skip_regime_shifts=[False, True],
         entry_days_before=entry_days_before,
     )
 
@@ -264,7 +271,95 @@ def run_grid_search(
         optimize_by="sharpe_ratio",
     )
 
+    # Tag results with visible_col for cross-comparison
+    summary_df = summary_df.with_columns(
+        pl.lit(visible_col).alias("visible_col"),
+    )
+
     return summary_df, results, processor
+
+
+def run_all_visible_cols(
+    ticker: str,
+    signal_method: str = "stl_p4_s7_robustTrue",
+    start_date: date | None = date(2018, 1, 1),
+    end_date: date | None = None,
+    debug: bool = True,
+) -> tuple[pl.DataFrame, dict[str, list[GridSearchResult]], StrategyProcessor]:
+    """Run grid search across all available visible_col variants.
+
+    Returns combined summary, per-visible_col results, and last processor
+    (for buy-and-hold comparison — market data is the same for all variants).
+    """
+    available = list_visible_cols(ticker, method=signal_method)
+    if not available:
+        raise ValueError(
+            f"No visible_col variants found for {ticker} / {signal_method}"
+        )
+
+    print(f"Found {len(available)} visible_col variants: {available}")
+
+    all_summaries: list[pl.DataFrame] = []
+    all_results: dict[str, list[GridSearchResult]] = {}
+    last_processor: StrategyProcessor | None = None
+
+    for vc in available:
+        print(f"\n{'─' * 60}")
+        print(f"Running grid search: visible_col={vc}")
+        print(f"{'─' * 60}")
+
+        summary_df, results, processor = run_grid_search(
+            ticker=ticker,
+            visible_col=vc,
+            signal_method=signal_method,
+            start_date=start_date,
+            end_date=end_date,
+            debug=debug,
+        )
+        all_summaries.append(summary_df)
+        all_results[vc] = results
+        last_processor = processor
+
+    assert last_processor is not None
+    combined = pl.concat(all_summaries, how="diagonal_relaxed")
+
+    return combined, all_results, last_processor
+
+
+def print_visible_col_comparison(combined_df: pl.DataFrame) -> None:
+    """Print per-visible_col performance summary."""
+    print("\n" + "=" * 70)
+    print("VISIBLE COLUMN COMPARISON")
+    print("=" * 70)
+
+    comparison = (
+        combined_df.filter(pl.col("trade_n_trades") >= 5)
+        .group_by("visible_col")
+        .agg(
+            pl.col("sharpe_ratio").mean().alias("mean_sharpe"),
+            pl.col("sharpe_ratio").max().alias("max_sharpe"),
+            pl.col("trade_total_return").mean().alias("mean_return"),
+            pl.col("trade_total_return").max().alias("max_return"),
+            pl.col("trade_n_trades").mean().alias("mean_trades"),
+            pl.len().alias("n_strategies"),
+        )
+        .sort("mean_sharpe", descending=True)
+    )
+    display(comparison)
+
+    # Top 5 per visible_col
+    for vc in combined_df["visible_col"].unique().sort().to_list():
+        subset = combined_df.filter(
+            (pl.col("visible_col") == vc) & (pl.col("trade_n_trades") >= 5)
+        ).sort("sharpe_ratio", descending=True)
+        print(f"\n  Top 5 for visible_col={vc}:")
+        for row in subset.head(5).iter_rows(named=True):
+            print(
+                f"    {row['entry_name']} × {row['exit_name']}: "
+                f"sharpe={row['sharpe_ratio']:.3f}  "
+                f"return={row['trade_total_return']:.1%}  "
+                f"trades={row['trade_n_trades']}"
+            )
 
 
 def main(ticker: str = "DE") -> None:
@@ -275,49 +370,70 @@ def main(ticker: str = "DE") -> None:
     print(f"Strategy Grid Search: {ticker}")
     print(f"{'=' * 60}\n")
 
-    summary_df, results, processor = run_grid_search(
+    combined_df, all_results, processor = run_all_visible_cols(
         ticker=ticker,
         start_date=date(2015, 1, 1),
         debug=True,
     )
 
-    # Top 10 by Sharpe
-    print("\n📊 Top 10 Strategies by Sharpe Ratio:\n")
-    display(summary_df.head(10))
+    # =========================================================================
+    # Cross-visible_col comparison
+    # =========================================================================
+    print_visible_col_comparison(combined_df)
 
-    # Top 10 by total return
-    print("\n📊 Top 10 Strategies by Total Return:\n")
-    by_return = summary_df.sort("trade_total_return", descending=True)
+    # =========================================================================
+    # Overall top results (across all visible_cols)
+    # =========================================================================
+    print("\n📊 Top 10 Strategies by Sharpe Ratio (all visible_cols):\n")
+    display(combined_df.sort("sharpe_ratio", descending=True).head(10))
+
+    print("\n📊 Top 10 Strategies by Total Return (all visible_cols):\n")
+    by_return = combined_df.sort("trade_total_return", descending=True)
     display(by_return.head(10))
 
     # Entry type comparison
     print("\n📊 Entry Type Performance:")
-    display(compare_entry_types(summary_df))
+    display(compare_entry_types(combined_df))
 
     # Corr-aware variant comparison
-    print("\n📊 Correlation-Aware Variant Performance:")
-    display(
-        compare_entry_types(
-            summary_df.filter(pl.col("entry_entry_type") == "correlation_aware")
+    if combined_df.filter(pl.col("entry_name").str.contains("corr_aware")).height > 0:
+        print("\n📊 Correlation-Aware Variant Performance:")
+        display(
+            compare_entry_types(
+                combined_df.filter(pl.col("entry_name").str.contains("corr_aware"))
+            )
         )
-    )
-    # Analyze top strategies
-    print("\n" + "=" * 60)
-    print("DETAILED TRADE ANALYSIS")
-    print("=" * 60)
-    analyze_best_strategies(GridSearchResults(results), processor, summary_df, top_n=5)
 
-    # Direct comparison: best momentum vs best corr_aware
+    # Use the best visible_col's results for detailed analysis
+    best_vc = (
+        combined_df.filter(pl.col("trade_n_trades") >= 5)
+        .group_by("visible_col")
+        .agg(pl.col("sharpe_ratio").max().alias("best_sharpe"))
+        .sort("best_sharpe", descending=True)
+        .row(0)[0]
+    )
+    print(f"\n⭐ Best visible_col: {best_vc}")
+    best_results = all_results[best_vc]
+
+    # Analyze top strategies from the best visible_col
+    best_summary = combined_df.filter(pl.col("visible_col") == best_vc)
+    print("\n" + "=" * 60)
+    print(f"DETAILED TRADE ANALYSIS (visible_col={best_vc})")
+    print("=" * 60)
+    analyze_best_strategies(
+        GridSearchResults(best_results), processor, best_summary, top_n=5
+    )
+
+    # Direct comparison: best momentum vs best corr_aware (across all visible_cols)
+    all_flat = [r for rs in all_results.values() for r in rs]
     print("\n" + "=" * 60)
     print("HEAD-TO-HEAD: BEST MOMENTUM vs BEST CORRELATION-AWARE")
     print("=" * 60)
 
-    # best_momentum =
-
     best_momentum = next(
         (
             r
-            for r in results
+            for r in all_flat
             if "momentum" in r.entry_rule.name and r.trade_log.total_return > 0
         ),
         None,
@@ -325,7 +441,7 @@ def main(ticker: str = "DE") -> None:
     best_corr = next(
         (
             r
-            for r in results
+            for r in all_flat
             if "corr_aware" in r.entry_rule.name and r.trade_log.total_return > 0
         ),
         None,
@@ -342,11 +458,11 @@ def main(ticker: str = "DE") -> None:
             print(f"    Max DD: {r.metrics.risk.max_drawdown:.1%}")
             print(f"    Avg Holding: {r.trade_log.avg_holding_days:.1f} days")
 
-    # Save results
+    # Save results (best visible_col)
     save_results(
         ticker=ticker,
-        summary_df=summary_df,
-        results=results,
+        summary_df=best_summary,
+        results=best_results,
         processor=processor,
         output_dir="results",
         top_n=5,
@@ -354,11 +470,11 @@ def main(ticker: str = "DE") -> None:
 
 
 if __name__ == "__main__":
-    # from pyinstrument import Profiler
+    from pyinstrument import Profiler
 
-    # profiler = Profiler(interval=0.01)
-    # profiler.reset()
-    # profiler.start()
+    profiler = Profiler(interval=0.01)
+    profiler.reset()
+    profiler.start()
 
     parser = argparse.ArgumentParser(
         description="Run correlation-aware strategy grid search"
@@ -369,5 +485,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(ticker=args.ticker)
 
-    # profiler.stop()
-    # profiler.open_in_browser()
+    profiler.stop()
+    profiler.open_in_browser()

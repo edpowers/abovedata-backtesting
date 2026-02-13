@@ -14,6 +14,8 @@ from typing import Any, Self
 
 import polars as pl
 
+from abovedata_backtesting.entries.entry_signals import _short_signal_col
+
 from abovedata_backtesting.entries.entry_context import EntryContext
 from abovedata_backtesting.entries.entry_signals import (
     EntryRule,
@@ -206,7 +208,8 @@ class CorrelationAwareEntry(EntryRule):
 
     @property
     def name(self) -> str:
-        parts = [f"corr_aware_{self.corr_col}"]
+        col = _short_signal_col(self.signal_col)
+        parts = [f"corr_aware_{self.corr_col}_{col}"]
         if self.target_next_quarter:
             parts.append("tgtQ+1")
         if self.min_signal_abs > 0:
