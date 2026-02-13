@@ -302,6 +302,44 @@ def _compute_ic(
     return float(ic), float(pval)
 
 
+def _compute_rolling_abs_ic(
+    signal_vals: np.ndarray,
+    fwd_vals: np.ndarray,
+    window: int = 6,
+    min_window: int = 4,
+) -> float | None:
+    """Mean |IC| over rolling windows of *window* observations.
+
+    The full-sample IC averages out regime-switching signals — a signal
+    that is strongly positive for 3 quarters then strongly negative for
+    3 quarters has near-zero IC overall.  Mean |IC| captures the signal's
+    predictive *magnitude* regardless of sign flips between regimes.
+
+    Observations are assumed to be in chronological order.
+    """
+    mask = np.isfinite(signal_vals) & np.isfinite(fwd_vals)
+    s, f = signal_vals[mask], fwd_vals[mask]
+    n = len(s)
+    if n < min_window:
+        return None
+
+    abs_ics: list[float] = []
+    step = max(1, window // 2)  # 50 % overlap between windows
+    for start in range(0, n - min_window + 1, step):
+        end = min(start + window, n)
+        if end - start < min_window:
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ic, _ = stats.spearmanr(s[start:end], f[start:end])
+        if np.isfinite(ic):
+            abs_ics.append(abs(float(ic)))
+
+    if not abs_ics:
+        return None
+    return float(np.mean(abs_ics))
+
+
 # All signal columns we evaluate (numeric + regime).
 ALL_SIGNAL_COLS = ALL_NUMERIC_SIGNALS + REGIME_SHIFT_SIGNALS
 
@@ -314,9 +352,17 @@ def screen_ticker_signals(
 ) -> pl.DataFrame:
     """Compute per-ticker, per-signal IC at the given horizon.
 
-    Returns DataFrame with:
-        ticker, visible_col, n_obs, signal_col, ic, pval, accuracy, ls_spread, n_paired
-    One row per (ticker, signal_col) combination.
+    Returns DataFrame with columns:
+        ticker, visible_col, signal_col, n_obs, n_paired,
+        ic, pval, abs_ic,           ← full-sample IC
+        mean_abs_ic,                ← mean |IC| over rolling windows
+        accuracy, ls_spread
+
+    ``mean_abs_ic`` is the primary ranking metric — it captures how
+    strongly the signal predicts returns regardless of sign flips
+    between high/low correlation regimes.  Full-sample ``ic`` may
+    average to near-zero if the signal's direction reverses, even
+    when the magnitude is consistently large.
     """
     results: list[dict] = []
     tickers = signal_panel["ticker"].unique().sort().to_list()
@@ -352,14 +398,18 @@ def screen_ticker_signals(
                     fwd_vals.append(fwd)
 
             n = len(sig_vals)
-            ic, pval = _compute_ic(np.array(sig_vals), np.array(fwd_vals))
+            sig_arr = np.array(sig_vals)
+            fwd_arr = np.array(fwd_vals)
+
+            ic, pval = _compute_ic(sig_arr, fwd_arr)
+
+            # Rolling mean |IC| — robust to regime-switching signals.
+            mean_abs_ic = _compute_rolling_abs_ic(sig_arr, fwd_arr)
 
             # Direction accuracy and long-short spread.
             accuracy = None
             ls_spread = None
             if n >= min_obs:
-                sig_arr = np.array(sig_vals)
-                fwd_arr = np.array(fwd_vals)
                 same_sign = np.sum(np.sign(sig_arr) == np.sign(fwd_arr))
                 accuracy = float(same_sign / n)
 
@@ -382,6 +432,7 @@ def screen_ticker_signals(
                     "n_paired": n,
                     "ic": ic,
                     "pval": pval,
+                    "mean_abs_ic": mean_abs_ic,
                     "accuracy": accuracy,
                     "ls_spread": ls_spread,
                 }
@@ -390,7 +441,7 @@ def screen_ticker_signals(
     return (
         pl.DataFrame(results)
         .with_columns(pl.col("ic").abs().alias("abs_ic"))
-        .sort("abs_ic", descending=True, nulls_last=True)
+        .sort("mean_abs_ic", descending=True, nulls_last=True)
     )
 
 
@@ -731,16 +782,19 @@ def main(
 
     # ── 2a: Best signal per ticker ────────────────────────────────────────
     print(f"\n{'=' * 80}")
-    print(f"BEST SIGNAL PER TICKER (highest |IC| at {horizon}d)")
+    print(f"BEST SIGNAL PER TICKER (highest mean |IC| at {horizon}d)")
     print(f"{'=' * 80}")
 
-    # For each ticker, find the signal with the highest |IC|.
+    # For each ticker, pick the signal with the highest mean_abs_ic.
+    # This is robust to regime-switching: a signal that flips direction
+    # but is consistently strong will rank higher than one with a lucky
+    # full-sample IC driven by a single outlier quarter.
     best_per_ticker = (
-        screening.filter(pl.col("ic").is_not_null())
-        .sort("abs_ic", descending=True)
+        screening.filter(pl.col("mean_abs_ic").is_not_null())
+        .sort("mean_abs_ic", descending=True)
         .group_by("ticker", maintain_order=True)
         .first()
-        .sort("abs_ic", descending=True)
+        .sort("mean_abs_ic", descending=True)
     )
 
     print(
@@ -748,6 +802,7 @@ def main(
             "ticker",
             "signal_col",
             "n_paired",
+            "mean_abs_ic",
             "ic",
             "pval",
             "accuracy",
@@ -757,15 +812,15 @@ def main(
 
     # ── 2b: Best ticker per signal ────────────────────────────────────────
     print(f"\n{'=' * 80}")
-    print(f"BEST TICKER PER SIGNAL TYPE (highest |IC| at {horizon}d)")
+    print(f"BEST TICKER PER SIGNAL TYPE (highest mean |IC| at {horizon}d)")
     print(f"{'=' * 80}")
 
     best_per_signal = (
-        screening.filter(pl.col("ic").is_not_null())
-        .sort("abs_ic", descending=True)
+        screening.filter(pl.col("mean_abs_ic").is_not_null())
+        .sort("mean_abs_ic", descending=True)
         .group_by("signal_col", maintain_order=True)
         .first()
-        .sort("abs_ic", descending=True)
+        .sort("mean_abs_ic", descending=True)
     )
 
     print(
@@ -773,6 +828,7 @@ def main(
             "signal_col",
             "ticker",
             "n_paired",
+            "mean_abs_ic",
             "ic",
             "pval",
             "accuracy",
@@ -816,12 +872,13 @@ def main(
         .agg(
             pl.len().alias("n_tickers"),
             pl.col("ic").mean().alias("mean_ic"),
-            pl.col("abs_ic").mean().alias("mean_abs_ic"),
+            pl.col("abs_ic").mean().alias("mean_full_sample_abs_ic"),
+            pl.col("mean_abs_ic").mean().alias("mean_rolling_abs_ic"),
             pl.col("ic").median().alias("median_ic"),
             (pl.col("pval") <= pval_thresh).sum().alias("n_significant"),
             pl.col("accuracy").mean().alias("mean_accuracy"),
         )
-        .sort("mean_abs_ic", descending=True)
+        .sort("mean_rolling_abs_ic", descending=True)
     )
     print(signal_summary)
 
@@ -907,7 +964,14 @@ def main(
     print(f"{'=' * 80}")
 
     if all_cross_pairs:
-        combined_pairs = pl.concat(all_cross_pairs).sort("abs_ic", descending=True)
+        # Deduplicate: correlated signal columns (e.g. leading_corr_historical
+        # and filtered_leading_corr) often produce identical IC values for the
+        # same pair.  Keep only one row per (signal_ticker, target_ticker, cross_ic).
+        combined_pairs = (
+            pl.concat(all_cross_pairs)
+            .unique(subset=["signal_ticker", "target_ticker", "cross_ic"])
+            .sort("abs_ic", descending=True)
+        )
         print(combined_pairs.head(40))
     else:
         combined_pairs = pl.DataFrame()
@@ -918,7 +982,11 @@ def main(
     print(f"{'=' * 80}")
 
     if all_hedges:
-        combined_hedges = pl.concat(all_hedges).sort("signal_corr")
+        combined_hedges = (
+            pl.concat(all_hedges)
+            .unique(subset=["ticker_a", "ticker_b", "signal_corr"])
+            .sort("signal_corr")
+        )
         print(combined_hedges.head(30))
     else:
         combined_hedges = pl.DataFrame()

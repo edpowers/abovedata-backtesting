@@ -1,9 +1,10 @@
 """Strategy grid search using raw STL processor output.
 
-Compares three entry approaches:
+Compares four entry approaches:
 1. Momentum (price-only baseline)
 2. Correlation-aware (fundamental signal + correlation regime for direction)
 3. Signal-based (threshold, confirmation, divergence)
+4. Cross-ticker (peer signals with adaptive rolling cross-IC)
 
 Uses raw STL output with contemp_corr_historical, leading_corr_historical,
 confidence scores, and regime shift detection.
@@ -23,6 +24,10 @@ from abovedata_backtesting.data_loaders.load_signal_data import (
     load_signal_data,
 )
 from abovedata_backtesting.entries.correlation_aware_entry import CorrelationAwareEntry
+from abovedata_backtesting.entries.cross_ticker_entry import (
+    CrossTickerEntry,
+    discover_peer_config,
+)
 from abovedata_backtesting.entries.entry_signals import (
     DivergenceEntry,
     MomentumEntry,
@@ -224,6 +229,39 @@ def run_grid_search(
     )
 
     # =========================================================================
+    # Cross-ticker entries (peer signals with adaptive rolling cross-IC)
+    # =========================================================================
+
+    peer_config = discover_peer_config(ticker, top_n_peers=3)
+    peer_tickers = peer_config["peer_tickers"]
+    peer_signal_cols = peer_config["peer_signal_cols"]
+
+    cross_entries: list[CrossTickerEntry] = []
+    if peer_tickers:
+        # Build peer tuples: individual top peers + combined group.
+        peer_sets: list[tuple[str, ...]] = []
+        for pt in peer_tickers[:3]:
+            peer_sets.append((pt,))
+        if len(peer_tickers) >= 2:
+            peer_sets.append(tuple(peer_tickers[:3]))
+
+        # Ensure "resid" is always tried.
+        peer_sig_cols = list(set(peer_signal_cols + ["resid"]))
+
+        cross_entries = CrossTickerEntry.grid(
+            target_ticker=[ticker],
+            peer_tickers=peer_sets,
+            peer_signal_col=peer_sig_cols,
+            own_signal_col=[resid_col],
+            aggregation=["mean", "strongest"],
+            min_peer_signals=[1],
+            max_peer_signal_age_days=[90],
+            entry_days_before=entry_days_before,
+            min_own_signal_abs=[0.0],
+            rolling_ic_window=[6],
+        )
+
+    # =========================================================================
     # Add entries to processor
     # =========================================================================
 
@@ -242,6 +280,10 @@ def run_grid_search(
     # Multi-horizon and lagged entries
     processor.add_entries(multi_horizon)
     processor.add_entries(corr_aware_lagged)
+
+    # Cross-ticker entries
+    if cross_entries:
+        processor.add_entries(cross_entries)
 
     processor.add_position_filters(["long_short", "long_only"])
 
@@ -424,39 +466,40 @@ def main(ticker: str = "DE") -> None:
         GridSearchResults(best_results), processor, best_summary, top_n=5
     )
 
-    # Direct comparison: best momentum vs best corr_aware (across all visible_cols)
+    # Direct comparison: best of each entry type (across all visible_cols)
     all_flat = [r for rs in all_results.values() for r in rs]
     print("\n" + "=" * 60)
-    print("HEAD-TO-HEAD: BEST MOMENTUM vs BEST CORRELATION-AWARE")
+    print("HEAD-TO-HEAD: BEST MOMENTUM vs BEST CORR-AWARE vs BEST CROSS-TICKER")
     print("=" * 60)
 
-    best_momentum = next(
-        (
-            r
-            for r in all_flat
-            if "momentum" in r.entry_rule.name and r.trade_log.total_return > 0
-        ),
-        None,
-    )
-    best_corr = next(
-        (
-            r
-            for r in all_flat
-            if "corr_aware" in r.entry_rule.name and r.trade_log.total_return > 0
-        ),
-        None,
-    )
-
-    if best_momentum and best_corr:
-        for label, r in [("MOMENTUM", best_momentum), ("CORR-AWARE", best_corr)]:
-            print(f"\n  {label}: {r.entry_rule.name} × {r.exit_rule.name}")
-            print(f"    Sharpe: {r.metrics.risk.sharpe_ratio:.3f}")
-            print(f"    Total Return: {r.trade_log.total_return:.1%}")
-            print(f"    Trades: {r.trade_log.n_trades}")
-            print(f"    Win Rate: {r.trade_log.win_rate:.1%}")
-            print(f"    Avg Return: {r.trade_log.avg_return:.4f}")
-            print(f"    Max DD: {r.metrics.risk.max_drawdown:.1%}")
-            print(f"    Avg Holding: {r.trade_log.avg_holding_days:.1f} days")
+    for label, pattern in [
+        ("MOMENTUM", "momentum"),
+        ("CORR-AWARE", "corr_aware"),
+        ("CROSS-TICKER", "cross_"),
+    ]:
+        best = next(
+            (
+                r
+                for r in sorted(
+                    all_flat, key=lambda r: r.metrics.risk.sharpe_ratio, reverse=True
+                )
+                if pattern in r.entry_rule.name
+                and r.trade_log.total_return > 0
+                and r.trade_log.n_trades >= 5
+            ),
+            None,
+        )
+        if best:
+            print(f"\n  {label}: {best.entry_rule.name} × {best.exit_rule.name}")
+            print(f"    Sharpe: {best.metrics.risk.sharpe_ratio:.3f}")
+            print(f"    Total Return: {best.trade_log.total_return:.1%}")
+            print(f"    Trades: {best.trade_log.n_trades}")
+            print(f"    Win Rate: {best.trade_log.win_rate:.1%}")
+            print(f"    Avg Return: {best.trade_log.avg_return:.4f}")
+            print(f"    Max DD: {best.metrics.risk.max_drawdown:.1%}")
+            print(f"    Avg Holding: {best.trade_log.avg_holding_days:.1f} days")
+        else:
+            print(f"\n  {label}: No strategies with >=5 trades")
 
     # Save results (best visible_col)
     save_results(

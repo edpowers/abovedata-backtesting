@@ -65,8 +65,8 @@ Extract from the matrices:
 | `significant_signals.csv` | Subset of screening where |IC| >= 0.05 and p-value <= 0.20 |
 | `best_signal_per_ticker.csv` | For each ticker, the single signal type with the highest |IC| |
 | `signal_type_summary.csv` | Aggregated statistics per signal type across all tickers (mean IC, # significant, mean accuracy) |
-| `cross_predictive_pairs.csv` | Ticker pairs where one ticker's signal predicts another's returns (|cross-IC| >= 0.10), across all significant signal types |
-| `natural_hedges.csv` | Ticker pairs with negatively correlated signals (potential offsetting exposure) |
+| `cross_predictive_pairs.csv` | Ticker pairs where one ticker's signal predicts another's returns (|cross-IC| >= 0.10), across all significant signal types. Deduplicated on (signal_ticker, target_ticker, cross_ic) so correlated signal columns don't produce duplicate rows |
+| `natural_hedges.csv` | Ticker pairs with negatively correlated signals (potential offsetting exposure). Deduplicated on (ticker_a, ticker_b, signal_corr) |
 
 ## How to Read the Results
 
@@ -79,11 +79,12 @@ Extract from the matrices:
 | `signal_col` | Which signal type (e.g., `leading_corr_historical`, `contemp_confidence`) |
 | `n_obs` | Total earnings date observations for this ticker |
 | `n_paired` | Observations with both a valid signal value and a computable forward return |
-| `ic` | Information Coefficient (Spearman rank correlation with forward returns). Positive = signal predicts positive returns; negative = signal predicts negative returns |
-| `pval` | P-value for the IC. Lower = more statistically significant |
+| `ic` | Full-sample Information Coefficient (Spearman rank correlation with forward returns). Positive = signal predicts positive returns; negative = signal predicts negative returns. **Caution**: this averages across all regimes, so a signal that flips direction will show near-zero IC even if it's consistently strong |
+| `pval` | P-value for the full-sample IC. Lower = more statistically significant |
+| `mean_abs_ic` | **Primary ranking metric.** Mean of |IC| computed over rolling windows of 6 observations (50% overlap). Captures signal strength regardless of regime-switching. A signal that is +0.8 IC for 3 quarters then -0.8 IC for 3 quarters will show mean_abs_ic ≈ 0.8 (strong) even though full-sample IC ≈ 0 |
 | `accuracy` | % of times sign(signal) matches sign(forward_return) |
 | `ls_spread` | Long-short spread: mean return when signal > 0 minus mean return when signal < 0 |
-| `abs_ic` | Absolute value of IC (for ranking) |
+| `abs_ic` | Absolute value of full-sample IC |
 
 ### `cross_predictive_pairs.csv`
 
