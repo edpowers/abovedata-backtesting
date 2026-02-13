@@ -98,7 +98,8 @@ def run_grid_search(
     # Define base entry rules
     # =========================================================================
     # THESE ARE TRADING DAYS, NOT CALENDAR DAYS.
-    entry_days_before = [0, 1, 5, 15, 20, 30]
+    # entry_days_before = [0, 1, 5, 15, 20, 30]
+    entry_days_before = [5, 15, 20, 30]
 
     base_momentum = MomentumEntry.grid(
         lookback_days=[10, 20],
