@@ -1,5 +1,7 @@
 """Strategy processor for grid search optimization over entry × exit combinations."""
 
+from __future__ import annotations
+
 import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -16,7 +18,13 @@ from abovedata_backtesting.data_loaders.load_market_data import MarketDataLoader
 from abovedata_backtesting.entries.entry_signals import EntryRule, enforce_max_entries
 from abovedata_backtesting.exits.exit_strategies import ExitRule, SignalChangeExit
 from abovedata_backtesting.model.metrics import BacktestMetrics
+from abovedata_backtesting.processors.signal_preprocessor import (
+    IdentityPreprocessor,
+    SignalPreprocessor,
+)
 from abovedata_backtesting.trades.trade_log import TradeLog
+
+Preprocessor = SignalPreprocessor | IdentityPreprocessor
 
 # =============================================================================
 # Position Filter
@@ -105,6 +113,8 @@ class GridSearchResult:
     exit_params: dict[str, Any]
     sanity: SanityFlags
     max_entries_per_signal: int = 1
+    preprocessor_name: str = "identity"
+    preprocessor_params: dict[str, Any] = field(default_factory=dict)
 
     @property
     def trade_count(self) -> int:
@@ -221,6 +231,9 @@ class StrategyProcessor:
     _position_filters: list[PositionFilter] = field(
         default_factory=list, init=False, repr=False
     )
+    _preprocessors: list[Preprocessor] = field(
+        default_factory=list, init=False, repr=False
+    )
     _market_data: pl.DataFrame = field(
         default_factory=pl.DataFrame, init=False, repr=False
     )
@@ -230,6 +243,10 @@ class StrategyProcessor:
         default_factory=dict, init=False, repr=False
     )
     max_entries_per_signal: list[int] = field(default_factory=lambda: [1])
+
+    def add_preprocessors(self, preprocessors: Sequence[Preprocessor]) -> None:
+        """Add signal preprocessors to the search space."""
+        self._preprocessors.extend(preprocessors)
 
     def add_entries(self, rules: Sequence[EntryRule]) -> None:
         """Add entry rules to the search space."""
@@ -247,22 +264,38 @@ class StrategyProcessor:
         self,
         optimize_by: str = "sharpe_ratio",
     ) -> tuple[pl.DataFrame, list[GridSearchResult]]:
-        """Run full cartesian product of entry × exit rules."""
+        """Run full cartesian product of preprocessor × entry × exit rules."""
         self._load_data()
         self._set_defaults()
 
         results: list[GridSearchResult] = []
 
+        # Cache preprocessed signals to avoid redundant computation
+        preprocessed_cache: dict[str, pl.DataFrame] = {}
+
         combos = product(
+            self._preprocessors,
             self._entry_rules,
             self._exit_rules,
             self._position_filters,
             self.max_entries_per_signal,
         )
 
-        for entry, exit_rule, pos_filter, max_entries in combos:
+        for preprocessor, entry, exit_rule, pos_filter, max_entries in combos:
+            pp_key = preprocessor.name
+            if pp_key not in preprocessed_cache:
+                preprocessed_cache[pp_key] = preprocessor.apply(
+                    self.signals.clone(),
+                )
+            preprocessed_signals = preprocessed_cache[pp_key]
+
             if result := self._evaluate_combination(
-                entry, exit_rule, pos_filter, max_entries
+                entry,
+                exit_rule,
+                pos_filter,
+                max_entries,
+                preprocessed_signals,
+                preprocessor,
             ):
                 results.append(result)
 
@@ -321,6 +354,8 @@ class StrategyProcessor:
             self._exit_rules = [SignalChangeExit()]
         if not self._position_filters:
             self._position_filters = ["long_short"]  # Default: no filtering
+        if not self._preprocessors:
+            self._preprocessors = [IdentityPreprocessor()]
 
     def _evaluate_combination(
         self,
@@ -328,12 +363,16 @@ class StrategyProcessor:
         exit_rule: ExitRule,
         pos_filter: PositionFilter,
         max_entries: int,
+        signals: pl.DataFrame | None = None,
+        preprocessor: Preprocessor | None = None,
     ) -> GridSearchResult | None:
         """Run one entry × exit × position_filter combination and compute metrics."""
         assert self._market_data is not None
 
+        effective_signals = signals if signals is not None else self.signals
+
         # 1. Entry rule computes positions (sparse, on signal-derived dates)
-        daily = entry.apply(self._market_data.clone(), self.signals)
+        daily = entry.apply(self._market_data.clone(), effective_signals)
 
         if "position" not in daily.columns:
             return None
@@ -369,6 +408,9 @@ class StrategyProcessor:
             metrics, trade_log.n_trades, self.sanity_config
         )
 
+        pp_name = preprocessor.name if preprocessor is not None else "identity"
+        pp_params = preprocessor.params() if preprocessor is not None else {}
+
         return GridSearchResult(
             entry_rule=entry,
             exit_rule=exit_rule,
@@ -380,6 +422,8 @@ class StrategyProcessor:
             exit_params={"exit_type": exit_rule.name},
             sanity=sanity,
             max_entries_per_signal=max_entries,
+            preprocessor_name=pp_name,
+            preprocessor_params=pp_params,
         )
 
     def _apply_position_filter(
@@ -424,6 +468,7 @@ class StrategyProcessor:
         for i, r in enumerate(results):
             row: dict[str, Any] = {
                 "_original_idx": i,
+                "pp_name": r.preprocessor_name,
                 "entry_name": r.entry_rule.name,
                 "exit_name": r.exit_rule.name,
                 "position_filter": r.position_filter,

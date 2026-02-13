@@ -161,6 +161,8 @@ class RunningContext:
     contexts: dict[dt.date, EntryContext] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # Pass-through: if the column name isn't in the map, use it as-is.
+        # This supports transformed column names like "contemp_corr_historical_lag1q".
         self.corr_col_name = _CORR_COL_MAP.get(self.corr_col, self.corr_col)
         self.conf_col_name = _CONF_COL_MAP.get(self.confidence_col, self.confidence_col)
         self.regime_col_name = _REGIME_COL_MAP.get(
